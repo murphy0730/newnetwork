@@ -308,6 +308,17 @@
       return { nodes, edges, combos };
     }
 
+    // 分层纵向间距自适应：宽度受限时 autoFit 会按"最宽一层"缩小画布，静态 ranksep 在屏幕上被压扁。
+    // 按最宽层估算缩放比（节点+标签约100px宽），反推让层级带在屏幕上占满约70%视口高度的 ranksep
+    _adaptiveRanksep() {
+      const counts = {};
+      let max = 1;
+      for (const n of this.nodes) { const l = Math.min(8, n.level || 0); counts[l] = (counts[l] || 0) + 1; if (counts[l] > max) max = counts[l]; }
+      const zoom = Math.max(1, (max * 100) / (this.el.clientWidth || 1000));
+      const levels = Math.max(1, Object.keys(counts).length - 1);
+      return Math.round(Math.min(600, Math.max(130, (0.7 * (this.el.clientHeight || 700) * zoom) / levels)));
+    }
+
     // 分层布局的降级策略：无聚类且节点超过阈值时 dagre 耗时不可接受，按 BOM 层级直接计算行位置（preset）
     _usePreset() { return this.layoutMode === 'layered' && this.cluster === 'none' && this.nodes.length > (this.presetThreshold || 300); }
 
@@ -318,8 +329,8 @@
         for (const node of this.nodes) { const l = Math.min(8, node.level || 0); if (!byLevel.has(l)) byLevel.set(l, []); byLevel.get(l).push(node.code); }
         const perRow = 36; let y = 0;
         for (const [l, codes] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
-          codes.forEach((c, i) => this._presetMap.set(c, [(i % perRow) * 46, y + Math.floor(i / perRow) * 42]));
-          y += Math.ceil(codes.length / perRow) * 42 + 60;
+          codes.forEach((c, i) => this._presetMap.set(c, [(i % perRow) * 52, y + Math.floor(i / perRow) * 56]));
+          y += Math.ceil(codes.length / perRow) * 56 + 120;
         }
       }
       return this._presetMap.get(n.code) || [0, 0];
@@ -403,16 +414,20 @@
       const revision = ++this._renderRevision;
       this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
         if (!this.graph || revision !== this._renderRevision) return;
-        const layered = { type: 'dagre', rankdir: 'TB', nodesep: 30, ranksep: 70 };
+        const layered = { type: 'dagre', rankdir: 'TB', nodesep: 40, ranksep: this._adaptiveRanksep() };
         const preset = this._usePreset(); // 节点多时 dagre 不可用，按 BOM 层级预计算列位置
         const layout = this.cluster === 'none'
           ? preset ? { type: 'preset' } : this.layoutMode === 'layered' ? layered : { type: 'force' }
           : { type: 'combo-combined', comboPadding: 36, comboSpacing: 60, nodeSize: 50, nodeSpacing: 20,
-              layout: comboId => comboId ? this.layoutMode === 'layered' ? { type: 'dagre', rankdir: 'TB', nodesep: 30, ranksep: 70 } : { type: 'concentric', preventOverlap: true } : preset ? { type: 'preset' } : this.layoutMode === 'layered' ? { type: 'force', preventOverlap: true } : { type: 'force', preventOverlap: true } };
+              layout: comboId => comboId ? this.layoutMode === 'layered' ? { type: 'dagre', rankdir: 'TB', nodesep: 40, ranksep: this._adaptiveRanksep() } : { type: 'concentric', preventOverlap: true } : preset ? { type: 'preset' } : this.layoutMode === 'layered' ? { type: 'force', preventOverlap: true } : { type: 'force', preventOverlap: true } };
         this.graph.setLayout(layout);
         this.graph.setData(this._buildData());
         await this.graph.render();
-        if (this.graph && revision === this._renderRevision) await this._applyStates();
+        if (this.graph && revision === this._renderRevision) {
+          // 分层（纵向）视图：按宽度适配，允许垂直/水平拖拽查看，避免横向压缩把行距压扁
+          if (this.layoutMode === 'layered') await this.graph.fitView({ direction: 'x', when: 'overflow' }).catch(() => this.graph.fitView());
+          await this._applyStates();
+        }
       });
       return this._renderQueue;
     }

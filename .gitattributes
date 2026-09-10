@@ -1,0 +1,9 @@
+# Windows 批处理脚本必须以 CRLF 换行保存。
+# 若仓库/工作区里是 LF，旧版 cmd.exe 执行 call/goto 标签跳转时会报
+# "系统找不到指定的批处理标签" 并静默中止整个脚本（表现为双击后无任何反应）。
+# 这里强制 *.cmd / *.bat 检出时统一转为 CRLF，与 core.autocrlf 的设置解耦。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 其他文本文件沿用 git 默认归一化，检出时按各平台惯例
+* text=auto
