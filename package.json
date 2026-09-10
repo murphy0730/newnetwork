@@ -6,8 +6,11 @@
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "start": "node server/main.js",
+    "build:data": "node --max-old-space-size=8192 server/build.js",
     "test": "node --test tests/*.test.js",
     "benchmark": "node tests/benchmark.js",
-    "test:browser": "node tests/browser.js"
+    "test:browser": "node tests/browser.js",
+    "test:import-browser": "node tests/build-browser.js",
+    "benchmark:artifact": "node tests/artifact-benchmark.js"
   }
 }

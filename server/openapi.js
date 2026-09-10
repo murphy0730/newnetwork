@@ -13,6 +13,7 @@ function createOpenAPI() {
   const importSchema = {
     type: 'object', required: ['baseRevision'], properties: {
       baseRevision: { type: 'integer' },
+      files: { type: 'array', description: '在线上传文件ID；同一版本的全部分片须一次提交', items: { type: 'object', required: ['id', 'selections'], properties: { id: { type: 'string' }, selections: { type: 'array', items: { type: 'object', properties: { sheet: { type: 'string' }, table: { type: 'string' }, headerRow: { type: 'integer', minimum: 0, maximum: 9 } } } } } } },
       batches: { type: 'array', items: { type: 'object', required: ['table', 'rows'], properties: {
         table: { enum: ['forecast', 'bom', 'inventory', 'attributes', 'adjust', 'industry', 'mo'] },
         rows: { type: 'array', items: { type: 'object' } }
@@ -28,11 +29,17 @@ function createOpenAPI() {
     '/api/restore': ['restore_snapshot', { type: 'object', required: ['baseRevision', 'revision'] }],
     '/api/sample': ['load_sample', { type: 'object', required: ['baseRevision'] }],
     '/api/sample-large': ['load_sample_large', { type: 'object', required: ['baseRevision'] }],
+    '/api/builds/rebuild': ['rebuild_data', { type: 'object', required: ['baseRevision'], properties: { baseRevision: { type: 'integer' } } }],
     '/api/ai/invoke': ['invoke_tool', { type: 'object', required: ['tool', 'arguments'] }]
   };
   for (const [p, [operationId, schema]] of Object.entries(writes)) paths[p] = { post: { operationId, requestBody: { required: true, content: { 'application/json': { schema } } }, responses: { 202: { description: '后台任务已入队，返回jobId。GET /api/jobs/{id}获取completed/failed和结果。' }, 403: response, 409: response, 422: response } } };
   paths['/api/import/file'] = { post: { operationId: 'upload_file', parameters: [{ name: 'name', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } }, responses: { 202: { description: '返回解析任务jobId；结果包含文件id及各工作表识别信息。' } } } };
-  paths['/api/export'] = { get: { operationId: 'export_workbook', parameters: [{ name: 'kind', in: 'query', schema: { enum: ['template', 'sample', 'data'] } }], responses: { 200: { description: '完整Excel工作簿', content: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { schema: { type: 'string', format: 'binary' } } } } } } };
+  paths['/api/import/artifact'] = { post: { operationId: 'upload_artifact', description: '流式上传.supply；独立校验后返回previewId，commit只装载并原子切换，不重算。', parameters: [{ name: 'name', in: 'query', required: true, schema: { type: 'string' } }, { name: 'baseRevision', in: 'query', required: true, schema: { type: 'integer' } }], requestBody: paths['/api/import/file'].post.requestBody, responses: { 202: { description: '返回jobId；完成结果包含previewId、buildId、规模和告警。' }, 422: response } } };
+  paths['/api/builds'] = { get: { operationId: 'list_builds', description: '当前身份最近30项任务，保存7天；包含phase、message、percent、错误清单和产物预览ID。', responses: { 200: response } } };
+  paths['/api/jobs/{id}/cancel'] = { post: { operationId: 'cancel_build', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: response, 409: response } } };
+  paths['/api/import/discard'] = { post: { operationId: 'discard_uploads', requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } } } } } }, responses: { 200: response, 409: response } } };
+  paths['/api/import/schema'] = { get: { operationId: 'import_schema', responses: { 200: response } } };
+  paths['/api/export'] = { get: { operationId: 'export_data', parameters: [{ name: 'kind', in: 'query', schema: { enum: ['template', 'sample', 'data', 'artifact', 'csv'] } }, { name: 'table', in: 'query', description: 'kind=csv时必填', schema: { type: 'string' } }], responses: { 200: { description: 'Excel模板/样例/小规模数据，完整.supply产物，或按表流式CSV', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } }, 422: response } } };
   return { openapi: '3.0.3', info: { title: '供应网络预测协同API', version: '2.0.0' }, servers: [{ url: '/' }], security: [{ bearerAuth: [] }], components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } }, schemas: { Scenario: scenario } }, paths };
 }
 module.exports = { createOpenAPI, toolsManifest };

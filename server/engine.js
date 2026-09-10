@@ -3,9 +3,30 @@ const C = require('../forecast-core');
 
 // Server-only implementation. Keep the browser contract and shared business rules intact.
 class Engine extends C.Engine {
+  static restore(snapshot, version, artifact) {
+    // Rehydrate saved topology, critical paths and matrices. Never invoke topology/precompute.
+    const e = Object.create(Engine.prototype), m = artifact.manifest, saved = artifact.graph(snapshot);
+    Object.assign(e, { snapshot, t: snapshot.tables, cfg: { ...C.defaults, ...snapshot.config }, graph: saved.graph, criticalCache: saved.critical, versions: m.versions, version: version || m.versions.at(-1), sealed: true });
+    e.months = m.monthsByVersion[e.version] || [];
+    e.attributes = new Map(e.t.attributes.map(r => [r.code, r])); e.industries = new Map(e.t.industry.map(r => [r.make_dept, r.is_local]));
+    e.orderIndex = new Map(e.graph.order.map((code, i) => [code, i]));
+    e.forecast = []; e.byCodeMonth = new Map(); e.byCode = new Map();
+    for (const r of e.t.forecast) if (r.plan_date === e.version) { e.forecast.push(r); const key = JSON.stringify([r.code, r.month]); if (!e.byCodeMonth.has(key)) e.byCodeMonth.set(key, []); e.byCodeMonth.get(key).push(r); if (!e.byCode.has(r.code)) e.byCode.set(r.code, []); e.byCode.get(r.code).push(r); }
+    e.inventory = new Map(); e.inventoryDates = new Set(); e.excludedInventory = 0;
+    for (const r of e.t.inventory) { e.inventoryDates.add(r.date); if (/^(生产-三品|备件-)/.test(r.sub_type)) { e.excludedInventory++; continue; } const key = JSON.stringify([r.code, r.date]); e.inventory.set(key, (e.inventory.get(key) || 0) + r.qty); }
+    e.adjustments = new Map(); e.periodAdds = new Map();
+    if (e.cfg.input_mode === 'raw') for (const r of e.t.adjust) { const key = JSON.stringify([r.code, r.month]); if (!e.adjustments.has(key)) e.adjustments.set(key, { add: 0, remove: 0 }); e.adjustments.get(key)[r.direction === '供应' ? 'add' : 'remove'] += r.qty; }
+    for (const [key, adj] of e.adjustments) { const [code, month] = JSON.parse(key); if (e.months.includes(month)) e.periodAdds.set(code, (e.periodAdds.get(code) || 0) + adj.add); }
+    e.moByCodeMonth = new Map();
+    for (const r of e.t.mo) if (!r.actual_date && !/取消|关闭|完成|cancel|closed|complete/i.test(r.status || '')) { const key = JSON.stringify([r.code, (r.sched_date || r.due_date).slice(0, 7)]); if (!e.moByCodeMonth.has(key)) e.moByCodeMonth.set(key, []); e.moByCodeMonth.get(key).push({ ...r, site_name: r.site_name || r.site_code }); }
+    for (const cache of ['relationCache', 'monthCache', 'netCache', 'periodSiteCache']) e[cache] = new Map();
+    const derived = artifact.derived(e.version); e.materialized = derived.materialized; e.precomputed = { ...derived.stats, restored: true, buildId: m.buildId };
+    return e;
+  }
   matrix(month, mode = 'cross', source = 'forecast') {
     const key = JSON.stringify([month, mode, source]);
     if (this.materialized.has(key)) return this.materialized.get(key);
+    if (this.sealed) throw Object.assign(Error('已装载产物缺少所需计算结果，请重新构建；在线查询不会自动重算'), { status: 503, code: 'BUILD_REQUIRED' });
     const numeric = new Float64Array(this.graph.order.length * 2);
     const unknown = new Uint8Array(this.graph.order.length);
     for (let i = 0; i < this.graph.order.length; i++) {

@@ -55,7 +55,8 @@ function workbook(snapshot, template = false) {
   const wb = XLSX.utils.book_new(), sample = C.sample();
   for (const [table, schema] of Object.entries(C.schemas)) {
     const keys = Object.keys(schema.fields), rows = template ? [] : snapshot.tables[table];
-    const matrix = [keys.map(k => schema.fields[k].label), ...rows.map(r => keys.map(k => typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k] == null ? '' : r[k]))];
+    const matrix = [keys.map(k => schema.fields[k].label)];
+    for (const r of rows) matrix.push(keys.map(k => typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k] == null ? '' : r[k]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(matrix), table);
   }
   if (template) {
@@ -65,7 +66,8 @@ function workbook(snapshot, template = false) {
       ['1. 每张工作表对应一类数据，表头须与本模板一致，可位于前10行内任意一行；空表直接跳过即可，不会清空已有数据。'],
       ['2. 编码请用文本格式保存（避免科学计数法）；月份格式YYYY-MM；日期格式YYYY-MM-DD；布尔字段填 是/否。'],
       ['3. 预测按计划日期覆盖完整版本，库存按日期覆盖完整快照；BOM、制造属性、调整表、产业映射整表替换；多文件多表作为同一批次校验，确认后原子提交并预计算。'],
-      ['4. 支持大型文件（单文件500MB以内，Excel解压后2GB以内）；大文件解析与预计算需要几分钟，请耐心等候。'],
+      ['4. 大型数据建议按表分片CSV。在线流式上传，独立进程构建，页面可查看阶段、错误和结果；不设文件总量/总单元格/编码数上限，实际受机器内存、磁盘及Excel格式限制。'],
+      ['5. 同一预测版本或库存日期的全部分片应作为同一批次提交。构建完成后装载.supply产物，不再在线全量重算；产物保存完整数据及计算结果，可回溯。'],
       [],
       ['工作表', '数据名称', '必填字段'],
       ...Object.entries(C.schemas).map(([k, s]) => [k, s.label, s.required.map(f => s.fields[f].label).join('、')])

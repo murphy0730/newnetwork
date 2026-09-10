@@ -72,7 +72,12 @@ function changesFor(base, body, version) {
   return next;
 }
 class Service {
-  constructor(dbPath) { this.store = new Store(dbPath); this.cached = null; this.engines = new Map(); this.files = new Map(); this.previews = new Map(); this.engine(); }
+  constructor(dbPath) { this.store = new Store(dbPath); this.cached = null; this.engines = new Map(); this.files = new Map(); this.previews = new Map(); }
+  preload(filename, revision) {
+    const artifact = this.store.openArtifact(filename), snapshot = artifact.load(revision), engine = Engine.restore(snapshot, undefined, artifact);
+    this.cached = snapshot; this.cacheEngine(JSON.stringify([revision, engine.version, '']), engine);
+    return { buildId: artifact.manifest.buildId, codes: engine.graph.codes.length };
+  }
   state(revision) {
     const rev = revision == null ? this.store.revision() : Number(revision);
     if (this.cached?.revision === rev) return this.cached;
@@ -92,9 +97,10 @@ class Service {
       const baseline = scenario ? this.engine({ revision, version }, actor) : null;
       if (scenario) snap = changesFor(snap, scenario.request, version);
       if (version && !snap.tables.forecast.some(r => r.plan_date === version)) throw error('预测版本不存在', 404);
-      const e = new Engine(snap, version, baseline?.graph);
+      const artifact = !scenario ? this.store.artifact(revision) : null;
+      if (!scenario && version && !artifact) throw error('当前数据缺少离线构建产物，请从数据管理启动重建', 503);
+      const e = artifact ? Engine.restore(snap, version, artifact) : new Engine(snap, version, baseline?.graph);
       if (scenario) this.reuseMatrices(baseline, e, scenario.request);
-      if (version && !scenario) { const saved = this.store.derived(snap.revision, version); if (saved) { e.materialized = saved.materialized; e.precomputed = { ...saved.stats, restored: true }; } else { e.precomputed = e.precompute(); this.store.saveDerived(snap.revision, version, { materialized: e.materialized, stats: e.precomputed }); } }
       this.cacheEngine(key, e);
     }
     return this.engines.get(key);
@@ -125,15 +131,13 @@ class Service {
     return { engine, month, mode, source, trace: { revision: engine.snapshot.revision, version: engine.version || null, month: month || null, mode, source, scenario: q.scenario || null, input_mode: engine.cfg.input_mode, calculated_at: new Date().toISOString() } };
   }
   publish(next, expected, actor, action, prepared) {
-    if (!prepared) { const engine = new Engine(next); const stats = engine.precompute(); prepared = { version: engine.version, materialized: engine.materialized, stats }; }
     this.store.save(next, expected, actor, action, prepared); this.cached = null; this.engines.clear();
     return this.meta(actor);
   }
   meta(actor) {
-    const s = this.state();
-    if (this.metaCache?.revision === s.revision) return this.metaCache;
-    const engine = this.engine({}, actor);
-    this.metaCache = { revision: s.revision, kind: s.kind, updated_at: s.updated_at, config: s.config, counts: Object.fromEntries(Object.entries(s.tables).map(([k, v]) => [k, v.length])), versions: engine.versions, months: engine.months, codes: engine.graph.codes.length, edges: s.tables.bom.length, levels: Math.max(0, ...engine.graph.level.values()) + 1, precomputed: engine.precomputed, sites: [...new Map(s.tables.forecast.filter(r => r.site_code || r.site_name).map(r => [r.site_code || '名称:' + r.site_name, { code: r.site_code || '名称:' + r.site_name, name: r.site_name || r.site_code }])).values()], warnings: C.validate(s).warnings, industry: s.tables.industry, history: this.store.history() };
+    const revision = this.store.revision();
+    if (this.metaCache?.revision === revision) return this.metaCache;
+    this.metaCache = this.store.info();
     return this.metaCache;
   }
   list(q, actor) {
@@ -204,9 +208,11 @@ class Service {
     if (!['direct', 'cross', 'top'].includes(mode) || !['forecast', 'mo'].includes(source)) throw error('推演口径无效');
     const touched = this.reuseMatrices(beforeEngine, afterEngine, request);
     const months = [...touched].sort(), affected = [], adverse = new Set(), changedCodes = new Set();
+    let outsideHorizon;
     for (const m of months) {
-      beforeEngine.matrix(m, mode, source); afterEngine.matrix(m, mode, source);
-      for (const code of afterEngine.graph.order) { const b = beforeEngine.balance(code, m, mode, source), r = afterEngine.balance(code, m, mode, source); const gapChanged = b.gap !== r.gap && (b.gap == null || r.gap == null || Math.abs(b.gap - r.gap) > C.EPS), supplyChanged = b.supply !== r.supply && (b.supply == null || r.supply == null || Math.abs(b.supply - r.supply) > C.EPS);
+      const comparison = beforeEngine.months.includes(m) ? beforeEngine : (outsideHorizon ||= new Engine(base, version, beforeEngine.graph));
+      comparison.matrix(m, mode, source); afterEngine.matrix(m, mode, source);
+      for (const code of afterEngine.graph.order) { const b = comparison.balance(code, m, mode, source), r = afterEngine.balance(code, m, mode, source); const gapChanged = b.gap !== r.gap && (b.gap == null || r.gap == null || Math.abs(b.gap - r.gap) > C.EPS), supplyChanged = b.supply !== r.supply && (b.supply == null || r.supply == null || Math.abs(b.supply - r.supply) > C.EPS);
         if (gapChanged || supplyChanged || b.single !== r.single) { changedCodes.add(code); const worse = r.gap != null && (b.gap == null || r.gap > b.gap + C.EPS); if (worse) adverse.add(code); affected.push({ code, month: m, beforeSupply: b.supply, afterSupply: r.supply, beforeDemand: b.demand, afterDemand: r.demand, beforeGap: b.gap, afterGap: r.gap, worse, risks: afterEngine.row(code, m, mode, source).risks }); }
       }
     }
@@ -221,7 +227,6 @@ class Service {
     this.expire(); if (this.files.size >= 16) throw error('待导入文件过多，请完成或等待30分钟过期', 429);
     const sheets = Importer.readFile(body.name, body.bytes), id = randomUUID();
     const cells = sheets.reduce((sum, s) => sum + s.matrix.reduce((n, row) => n + row.length, 0), 0);
-    if (cells + [...this.files.values()].reduce((sum, f) => sum + f.cells, 0) > 100000000) throw error('待导入文件合计超过1亿单元格，请先完成当前批次', 429);
     this.files.set(id, { actor, name: body.name, sheets, cells, expires: Date.now() + 1800000 });
     return { id, name: body.name, sheets: sheets.map(s => ({ name: s.name, rows: Math.max(0, s.matrix.length - 1), detected: s.detected, preview: s.matrix.slice(0, 5) })) };
   }
@@ -240,9 +245,8 @@ class Service {
     }
     if (!batches.length) throw error('请至少选择一张工作表');
     if (errors.length) throw error(`导入校验失败，共${errors.length}项错误`, 422, errors.slice(0, 1000));
-    const prep = C.prepare(current, batches); if (prep.errors.length) throw error('关联校验失败', 422, prep.errors.slice(0, 1000));
-    const e = new Engine(prep.next); if (e.graph.codes.length > 60000 || prep.next.tables.bom.length > 500000) throw error('当前部署限制6万编码、50万BOM边，请拆分组织范围');
-    if (Math.max(0, ...e.graph.level.values()) > 19) throw error('BOM超过20层，请检查结构');
+    const next = require('./import-stream').merge(current, batches), prep = { next, ...C.validate(next) }; if (prep.errors.length) throw error('关联校验失败', 422, prep.errors.slice(0, 1000));
+    const e = new Engine(prep.next);
     const stats = e.precompute();
     const id = randomUUID(); if (this.previews.size >= 4) this.previews.delete(this.previews.keys().next().value);
     this.previews.set(id, { actor, next: prep.next, prepared: { version: e.version, materialized: e.materialized, stats }, baseRevision: current.revision, expires: Date.now() + 1800000 });
@@ -253,7 +257,7 @@ class Service {
     const result = this.publish(p.next, p.baseRevision, actor, 'import', p.prepared); this.previews.delete(body.previewId); for (const [id, f] of this.files) if (f.actor === actor) this.files.delete(id); return result;
   }
   config(body, actor) {
-    const s = C.copy(this.state()); if (body.baseRevision !== s.revision) throw error('配置已过期，请重新加载', 409);
+    const base = this.state(), s = { ...base, tables: { ...base.tables }, config: { ...base.config } }; if (body.baseRevision !== s.revision) throw error('配置已过期，请重新加载', 409);
     s.config = { ...s.config, ...body.config }; checkConfig(s.config);
     if (body.industry) { const p = Importer.publicRows('industry', body.industry); if (p.errors.length) throw error('产业映射无效', 422, p.errors); s.tables.industry = p.rows; }
     const v = C.validate(s); if (v.errors.length) throw error('配置导致数据校验失败', 422, v.errors);
@@ -264,14 +268,14 @@ class Service {
   restore(body, actor) { const s = this.state(); if (body.baseRevision !== s.revision) throw error('数据版本已变化', 409); const old = this.store.load(int(body.revision, 0, 1, 1e9)); return this.publish(old, s.revision, actor, 'restore'); }
   maintain(body, actor) {
     if (!['attributes', 'adjust'].includes(body.table)) throw error('仅支持制造属性或表2维护');
-    const s = C.copy(this.state()); if (body.baseRevision !== s.revision) throw error('数据已更新，请重新加载', 409);
+    const base = this.state(), s = { ...base, tables: { ...base.tables }, config: { ...base.config } }; if (body.baseRevision !== s.revision) throw error('数据已更新，请重新加载', 409);
     const p = Importer.publicRows(body.table, body.rows); if (p.errors.length) throw error('维护数据校验失败', 422, p.errors);
     if (body.table === 'attributes') { const changed = new Set(p.rows.map(r => r.code)); s.tables.attributes = s.tables.attributes.filter(r => !changed.has(r.code)).concat(p.rows); }
     else s.tables.adjust = p.rows;
     const v = C.validate(s); if (v.errors.length) throw error('关联校验失败', 422, v.errors);
     return this.publish(s, body.baseRevision, actor, 'maintain:' + body.table);
   }
-  table(q) { if (!C.schemas[q.table]) throw error('????'); return this.store.table(q.table, q.code, int(q.offset, 0, 0, 1e9), int(q.limit, 100, 1, 1000)); }
-  export(q) { return Importer.workbook(q.kind === 'sample' ? C.sampleLarge(0.1) : this.state(), q.kind === 'template'); }
+  table(q) { if (!C.schemas[q.table]) throw error('表名无效'); return this.store.table(q.table, q.code, int(q.offset, 0, 0, 1e9), int(q.limit, 100, 1, 1000)); }
+  export(q) { return Importer.workbook(q.kind === 'template' ? C.empty() : q.kind === 'sample' ? C.sampleLarge(0.1) : this.state(), q.kind === 'template'); }
 }
 module.exports = { Service, changesFor, error };
