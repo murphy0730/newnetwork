@@ -19,7 +19,7 @@
     const b = await res.json(); if (!res.ok) throw Object.assign(Error(b.error?.message || '请求失败'), { details: b.error?.details, status: res.status });
     if (res.status !== 202) return b;
     let j;
-    do { await new Promise(r => setTimeout(r, 500)); const response = await fetch('/api/jobs/' + b.jobId); if (!response.ok) throw Error('后台任务查询失败，请刷新检查数据版本'); j = await response.json(); } while (j.status === 'running');
+    do { await new Promise(r => setTimeout(r, 500)); const response = await fetch('/api/jobs/' + b.jobId); if (!response.ok) throw Error('后台任务查询失败，可到数据管理查看任务记录'); j = await response.json(); if (j.status === 'running') { const message = `${j.message || '后台处理中'}${j.percent != null ? ' · ' + j.percent + '%' : ''}`; notify(message); if ($('import-feedback')) $('import-feedback').textContent = message; } } while (j.status === 'running');
     if (j.status === 'failed') throw Object.assign(Error(j.error.message), { details: j.error.details }); return j.result;
   }
   function query(extra = {}) { const q = { version: state.version, month: state.month, mode: state.mode, source: state.source, scenario: state.scenario, ...extra }; return new URLSearchParams(Object.entries(q).filter(([, v]) => v !== '' && v != null)).toString(); }
@@ -130,21 +130,50 @@ async function drawGraphRequest(id) {
   function renderData() {
     $('workspace').innerHTML = `<div class="fc-stack"><div class="fc-card"><h3 class="fc-title">业务数据 · 导入与版本管理</h3><p class="fc-muted">预测按计划日期覆盖相应完整版本，库存按日期覆盖完整快照；BOM、制造属性、调整表和产业映射按整表替换。多个文件和工作表作为同一批次校验，确认后原子提交并预计算。</p><div class="fc-controls"><a class="btn ghost" href="/api/export?kind=template">下载Excel模板</a><a class="btn ghost" href="/api/export?kind=sample">下载完整示例Excel</a><a class="btn ghost" href="/api/export?kind=data">导出当前完整数据</a><button class="btn ghost" id="load-sample" ${user.role === 'admin' ? '' : 'disabled'}>加载示例</button></div><label class="fc-drop" id="drop-zone">选择或拖入 CSV / Excel（含多个工作表）<input id="upload-files" type="file" accept=".csv,.xlsx,.xls" multiple ${user.role === 'admin' ? '' : 'disabled'}><span class="fc-muted">单文件500MB以内，大文件解析与预计算需要几分钟，请耐心等候；UTF-8 / GB18030 CSV；编码请用文本保存，月份YYYY-MM。</span></label><div id="import-feedback" aria-live="polite"></div></div><div class="import-grid">${Object.entries(C.schemas).map(([key, s]) => `<div class="fc-card"><strong>${esc(s.label)}</strong><p class="fc-muted">${fmt(meta.counts[key])} 行</p><small class="fc-muted">${s.required.map(k => esc(s.fields[k].label)).join(' / ')}</small><div class="fc-controls"><button class="btn ghost sm" data-inspect="${key}">查看数据</button>${key === 'attributes' ? '<button class="btn ghost sm" id="edit-attr">维护周期属性</button>' : key === 'adjust' ? '<button class="btn ghost sm" id="edit-adjust">宽表维护</button>' : ''}</div></div>`).join('')}</div>${meta.warnings.length ? `<div class="fc-notice warn">${meta.warnings.map(esc).join('<br>')}</div>` : ''}<div class="fc-card"><h4>数据快照</h4><p class="fc-muted">恢复会生成新版本，历史版本和已保存推演保留。</p>${table(['版本', '时间', '来源', '操作'], meta.history.map(r => [String(r.revision), esc(r.created_at), esc(r.kind), `<button class="btn ghost sm" data-restore="${r.revision}" ${user.role === 'admin' ? '' : 'disabled'}>恢复此快照</button>`]))}</div><div class="fc-card"><h4>AI与系统集成</h4><p class="fc-muted">同一套服务端结果供页面和模型使用。模型工具只查询数据和创建独立推演，不执行任意SQL或修改基线。</p><div class="fc-controls"><a class="fc-link" href="/api/openapi.json" target="_blank" rel="noopener">OpenAPI接口文档</a><a class="fc-link" href="/api/ai/tools" target="_blank" rel="noopener">AI工具定义</a></div></div></div>`;
     $('load-sample').onclick = confirmSample;
-    $('upload-files').onchange = e => uploadFiles([...e.target.files]);
+    decorateBuildControls();
+    $('upload-files').onchange = e => { const files = [...e.target.files]; e.target.value = ''; uploadFiles(files); };
     $('drop-zone').ondragover = e => { e.preventDefault(); $('drop-zone').classList.add('over'); }; $('drop-zone').ondragleave = () => $('drop-zone').classList.remove('over'); $('drop-zone').ondrop = e => { e.preventDefault(); $('drop-zone').classList.remove('over'); if (user.role === 'admin') uploadFiles([...e.dataTransfer.files]); };
     document.querySelectorAll('[data-inspect]').forEach(el => el.onclick = async () => { try { const key = el.dataset.inspect, d = await api('/api/tables?table=' + key + '&limit=100'); const fields = Object.keys(C.schemas[key].fields); modal(C.schemas[key].label, `<p class="fc-muted">共${d.total}行，展示前100行。完整数据请导出查看。</p>${table(fields.map(k => esc(C.schemas[key].fields[k].label)), d.rows.map(r => fields.map(k => esc(typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k]))))}`); } catch (e) { showError(e); } });
     document.querySelectorAll('[data-restore]').forEach(el => el.onclick = () => modal('恢复历史快照', `<p>将版本 ${esc(el.dataset.restore)} 的数据和配置恢复为新的当前版本。</p>`, [{ label: '恢复并重算', primary: true, run: () => busy('正在恢复并预计算…', async () => { await api('/api/restore', { baseRevision: meta.revision, revision: Number(el.dataset.restore) }); $('modal').close(); state.scenario = ''; state.code = ''; await refreshMeta(); render(); }) }]));
     $('edit-attr').onclick = editAttribute; $('edit-adjust').onclick = editAdjust;
   }
+  function confirmBuild(preview) {
+    modal('构建完成 · 确认装载', `<p class="fc-notice">数据校验和全量预计算已在独立进程完成。装载成功后才切换当前版本。</p><p>${fmt(preview.codes)} 个编码 · 构建 ${esc(preview.buildId || '')}</p>${table(['目标表', '工作表', '导入行数'], (preview.summaries || []).map(s => [esc(C.schemas[s.table]?.label || s.table), esc(s.sheet || 'API'), fmt(s.rows)]))}${preview.warnings?.length ? `<p class="fc-notice warn">${preview.warnings.map(esc).join('<br>')}</p>` : ''}${preview.replacesSample ? '<p class="fc-muted">本次业务数据将替换演示数据。</p>' : ''}`, [{ label: '装载并切换版本', primary: true, run: () => busy('正在装载构建产物，当前版本继续提供查询…', async () => { await api('/api/import/commit', { previewId: preview.previewId }); $('modal').close(); state.scenario = ''; state.code = ''; await refreshMeta(); render(); notify('产物装载完成，已切换在线版本', 'ok'); }) }]);
+  }
+  function decorateBuildControls() {
+    const zone = $('drop-zone'); zone.querySelector('span').textContent = '流式上传到磁盘，在独立进程构建。大型数据推荐分片CSV；编码用文本、月份YYYY-MM。构建失败后暂存会释放，可重新上传。';
+    zone.parentElement.querySelector('p').textContent = '原始表上传后，在线启动独立构建并查看进度；也可直接上传离线生成的.supply产物。预测按完整计划日期版本替换，库存按完整日期快照替换；同一版本的所有分片请一起选择。新产物装载成功后才切换版本。';
+    const actions = document.createElement('div'); actions.className = 'fc-controls';
+    actions.innerHTML = `<label class="btn ghost">上传离线构建产物<input id="artifact-files" type="file" accept=".supply" hidden ${user.role === 'admin' ? '' : 'disabled'}></label><a class="btn ghost" href="/api/export?kind=artifact">下载当前完整产物</a><button class="btn ghost" id="rebuild-current" ${user.role === 'admin' ? '' : 'disabled'}>重建当前数据</button><a class="fc-link" href="/api/import/schema" target="_blank" rel="noopener">表格式与填写要求</a><select id="csv-table">${Object.entries(C.schemas).map(([key, s]) => opt(key, s.label, 'forecast')).join('')}</select><button class="btn ghost" id="export-csv-table">按表下载CSV</button>`;
+    zone.before(actions);
+    $('export-csv-table').onclick = () => { location.href = '/api/export?kind=csv&table=' + encodeURIComponent($('csv-table').value); };
+    $('artifact-files').onchange = e => { const file = e.target.files[0]; e.target.value = ''; if (file) busy('正在上传并校验构建产物…', async () => { const preview = await api('/api/import/artifact?name=' + encodeURIComponent(file.name) + '&baseRevision=' + meta.revision, file, true); confirmBuild(preview); }); };
+    $('rebuild-current').onclick = () => busy('正在独立重建当前数据…', async () => { await api('/api/builds/rebuild', { baseRevision: meta.revision }); state.scenario = ''; await refreshMeta(); render(); notify('重建及装载完成', 'ok'); });
+    const jobs = document.createElement('div'); jobs.className = 'fc-card'; jobs.innerHTML = '<h4>构建与装载任务</h4><p class="fc-muted">可以继续浏览当前数据；关闭页面后任务仍在后台执行，重新打开可查看进度和错误。</p><div id="build-jobs" aria-live="polite"></div>'; zone.parentElement.after(jobs);
+    refreshBuildJobs();
+  }
+  async function refreshBuildJobs() {
+    clearTimeout(refreshBuildJobs.timer); if (state.tab !== 'data' || !$('build-jobs')) return;
+    try {
+      const result = await api('/api/builds'); if (!$('build-jobs')) return;
+      const jobs = result.jobs.filter(j => j.kind !== 'simulate');
+      $('build-jobs').innerHTML = table(['时间', '阶段与进度', '状态', '操作'], jobs.map(j => [esc(new Date(j.created_at).toLocaleString('zh-CN')), esc(j.error?.message || j.message || j.phase) + (j.status === 'running' && j.percent != null ? ' · ' + j.percent + '%' : ''), j.status === 'running' ? '进行中' : j.status === 'completed' ? '已完成' : '失败 / 已取消', j.status === 'running' ? `<button class="btn ghost sm" data-cancel-build="${esc(j.id)}">取消</button>` : j.error ? `<button class="btn ghost sm" data-build-error="${esc(j.id)}">查看错误</button>` : j.canActivate ? `<button class="btn ghost sm" data-resume-build="${esc(j.id)}">查看产物并装载</button>` : '—']));
+      document.querySelectorAll('[data-cancel-build]').forEach(b => b.onclick = async () => { try { await api('/api/jobs/' + b.dataset.cancelBuild + '/cancel', {}); refreshBuildJobs(); } catch (e) { showError(e); } });
+      document.querySelectorAll('[data-build-error]').forEach(b => b.onclick = () => showError(jobs.find(j => j.id === b.dataset.buildError).error));
+      document.querySelectorAll('[data-resume-build]').forEach(b => b.onclick = () => confirmBuild(jobs.find(j => j.id === b.dataset.resumeBuild).result));
+    } catch (e) { if ($('build-jobs')) $('build-jobs').textContent = e.message; }
+    if (state.tab === 'data') refreshBuildJobs.timer = setTimeout(refreshBuildJobs, 1500);
+  }
   async function uploadFiles(files) {
     if (!files.length) return; await busy('正在上传并解析工作表…', async () => {
-      const uploaded = []; for (const file of files) { notify('正在解析 ' + file.name); uploaded.push(await api('/api/import/file?name=' + encodeURIComponent(file.name), file, true)); }
+      const uploaded = []; try { for (const file of files) { notify('正在上传并识别 ' + file.name); uploaded.push(await api('/api/import/file?name=' + encodeURIComponent(file.name), file, true)); } } catch (e) { await api('/api/import/discard', { ids: uploaded.map(f => f.id) }).catch(() => {}); throw e; }
       const selections = uploaded.flatMap(f => f.sheets.map(s => ({ file: f, sheet: s })));
       modal('确认工作表及表头', `<p class="fc-muted">请选择要导入的工作表；未识别的表可手工选择类型。表头行支持前10行。空表默认跳过，不会清空已有数据。</p>${table(['文件 / 工作表', '数据行', '导入为', '表头行'], selections.map((x, i) => [esc(x.file.name + ' / ' + x.sheet.name), fmt(x.sheet.rows), `<select id="sheet-type-${i}">${opt('', '跳过此表', x.sheet.detected?.table || '')}${Object.entries(C.schemas).map(([k, v]) => opt(k, v.label, x.sheet.detected?.table)).join('')}</select>`, `<input id="sheet-row-${i}" type="number" min="1" max="10" value="${(x.sheet.detected?.headerRow || 0) + 1}" style="width:65px">`]))}`, [{ label: '校验并预览', primary: true, run: async () => {
         const payload = uploaded.map(f => ({ id: f.id, selections: selections.map((x, i) => ({ x, i })).filter(({ x }) => x.file.id === f.id).map(({ x, i }) => ({ sheet: x.sheet.name, table: $('sheet-type-' + i).value, headerRow: Number($('sheet-row-' + i).value) - 1 })) }));
         notify('正在校验字段、关联、BOM与计算结果…'); const preview = await api('/api/import/preview', { baseRevision: meta.revision, files: payload });
-        modal('导入校验通过', `${preview.replacesSample ? '<p class="fc-notice warn">将建立业务数据集，不混入当前示例数据。</p>' : ''}${table(['目标表', '工作表', '导入行数'], preview.summaries.map(s => [esc(C.schemas[s.table].label), esc(s.sheet || 'API'), fmt(s.rows)]))}${preview.warnings.length ? `<p class="fc-notice warn">${preview.warnings.map(esc).join('<br>')}</p>` : ''}<p class="fc-muted">确认后保存新快照并预计算。预测/库存以本批次涉及的完整版本/日期替换。</p>`, [{ label: '确认导入并计算', primary: true, run: () => busy('正在保存数据并预计算全部月份与三种口径…', async () => { await api('/api/import/commit', { previewId: preview.previewId }); $('modal').close(); state.scenario = ''; state.code = ''; await refreshMeta(); render(); notify('导入完成，基线预计算已就绪', 'ok'); }) }]);
+        confirmBuild(preview);
       } }]);
+      $('modal').addEventListener('close', () => { api('/api/import/discard', { ids: uploaded.map(f => f.id) }).catch(() => {}); }, { once: true });
     });
   }
   async function editAttribute() {

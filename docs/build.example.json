@@ -1,0 +1,10 @@
+{
+  "files": [
+    { "path": "../imports/forecast-part1.csv", "table": "forecast" },
+    { "path": "../imports/forecast-part2.csv", "table": "forecast" },
+    { "path": "../imports/bom.csv", "table": "bom" },
+    { "path": "../imports/attributes.csv", "table": "attributes" },
+    { "path": "../imports/industry.csv", "table": "industry" }
+  ],
+  "output": "../build-output/dataset.supply"
+}

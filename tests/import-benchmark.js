@@ -1,0 +1,11 @@
+'use strict';
+const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
+const C = require('../forecast-core'), Importer = require('../server/importer');
+const lines = ['计划日期,编码,预测月份,预测数量,加工地代码'];
+for (let code = 0; code < 30000; code++) for (let m = 0; m < 11; m++) lines.push(['2026-09-10', String(code).padStart(8, '0'), C.addMonth('2026-09', m), 1000 + code % 500, 'S' + code % 300].join(','));
+const bytes = Buffer.from('\uFEFF' + lines.join('\r\n'), 'utf8');
+const started = performance.now(), sheets = Importer.readFile('规模预测.csv', bytes), parsed = C.parseMatrix('forecast', sheets[0].matrix, { file: '规模预测.csv', sheet: sheets[0].name });
+assert.equal(parsed.errors.length, 0); assert.equal(parsed.rows.length, 330000); assert.equal(parsed.rows[0].code, '00000000'); assert.equal(parsed.rows.at(-1).code, '00029999');
+const result = { measured_at: new Date().toISOString(), bytes: bytes.length, codes: 30000, months: 11, sites: 300, rows: parsed.rows.length, parse_and_normalize_ms: performance.now() - started, errors: parsed.errors.length };
+fs.mkdirSync(path.join(__dirname, '../test-output'), { recursive: true }); fs.writeFileSync(path.join(__dirname, '../test-output/import-benchmark.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
