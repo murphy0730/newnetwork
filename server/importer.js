@@ -1,0 +1,63 @@
+'use strict';
+const XLSX = require('../vendor/xlsx');
+const C = require('../forecast-core');
+function guardZip(buf) {
+  if (buf.readUInt32LE(0) !== 0x04034b50) return;
+  let end = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) if (buf.readUInt32LE(i) === 0x06054b50) { end = i; break; }
+  if (end < 0) throw Error('Excel压缩目录损坏');
+  let pos = buf.readUInt32LE(end + 16), total = 0, count = buf.readUInt16LE(end + 10);
+  if (count > 4096 || count === 65535) throw Error('Excel内部文件数量超限');
+  for (let i = 0; i < count; i++) { if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) throw Error('Excel压缩目录无效'); total += buf.readUInt32LE(pos + 24); if (total > 256 * 1024 * 1024) throw Error('Excel解压后超过256MB，请拆分为CSV'); pos += 46 + buf.readUInt16LE(pos + 28) + buf.readUInt16LE(pos + 30) + buf.readUInt16LE(pos + 32); }
+}
+function parseCSV(s) {
+  const out = []; let row = [], cell = '', quoted = false, cells = 0;
+  const pushCell = () => { if (row.length >= 200 || ++cells > 12000000) throw Error('CSV最多200列、1200万单元格，请拆分文件'); row.push(cell); cell = ''; };
+  const pushRow = () => { if (out.length >= 750000) throw Error('单文件总行数超过75万'); out.push(row); row = []; };
+  for (let i = 0; i < s.length; i++) { const c = s[i]; if (quoted) { if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false; } else cell += c; } else if (c === '"' && cell === '') quoted = true; else if (c === ',') { pushCell(); } else if (c === '\r' || c === '\n') { if (c === '\r' && s[i + 1] === '\n') i++; pushCell(); pushRow(); } else cell += c; }
+  if (quoted) throw Error('CSV引号未闭合'); if (cell || row.length) { pushCell(); pushRow(); }
+  return out;
+}
+function readFile(name, buffer) {
+  const ext = name.split('.').at(-1).toLowerCase(), buf = Buffer.from(buffer);
+  if (!['csv', 'xlsx', 'xls'].includes(ext)) throw Error('仅支持CSV、xlsx、xls');
+  if (!buf.length || buf.length > 25 * 1024 * 1024) throw Error('单文件须为1字节至25MB');
+  let sheets;
+  if (ext === 'csv') {
+    let content; try { content = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { content = new TextDecoder('gb18030').decode(buf); }
+    sheets = [{ name: name.replace(/\.csv$/i, ''), matrix: parseCSV(content), date1904: false }];
+  } else {
+    if (buf.length >= 4) guardZip(buf);
+    const wb = XLSX.read(buf, { type: 'buffer', cellNF: true, cellText: true, cellFormula: true });
+    sheets = wb.SheetNames.map(name => {
+      const ws = wb.Sheets[name], matrix = [];
+      if (!ws['!ref']) return { name, matrix, date1904: false };
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      if (range.e.r > 500000 || range.e.c > 199) throw Error('单工作表最多50万行、200列');
+      if ((range.e.r + 1) * (range.e.c + 1) > 12000000) throw Error('工作表有效范围超过1200万单元格，请清理多余格式或拆分CSV');
+      for (let r = 0; r <= range.e.r; r++) { const row = []; for (let c = 0; c <= range.e.c; c++) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell?.f && cell.v == null) throw Error(`${name}第${r + 1}行公式无缓存值，请在Excel中计算并保存`); row.push(cell ? cell.t === 'n' && /^0+$/.test(cell.z || '') && cell.w ? cell.w : cell.v == null ? '' : cell.v : ''); } matrix.push(row); }
+      return { name, matrix, date1904: !!wb.Workbook?.WBProps?.date1904 };
+    });
+  }
+  if (sheets.reduce((s, x) => s + x.matrix.length, 0) > 750000) throw Error('单文件总行数超过75万');
+  if (sheets.reduce((s, x) => s + x.matrix.reduce((n, row) => n + row.length, 0), 0) > 12000000) throw Error('单文件总单元格超过1200万，请拆分文件');
+  return sheets.map(s => { const detected = C.detect(s.matrix); return { ...s, detected: detected && s.matrix.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null }; });
+}
+function publicRows(table, rows) {
+  if (!C.schemas[table] || !Array.isArray(rows) || rows.length > 750000) throw Error('表名或数据行无效');
+  const fields = new Set();
+  for (const r of rows) { if (!r || typeof r !== 'object' || Array.isArray(r)) throw Error('数据行须为对象'); for (const key of Object.keys(r)) if (!key.startsWith('_')) fields.add(key); if (fields.size > 200) throw Error('API数据最多200列'); }
+  const keys = [...fields];
+  if (keys.length * rows.length > 12000000) throw Error('单批API数据最多1200万单元格');
+  return C.parseMatrix(table, [keys, ...rows.map(r => keys.map(k => r[k] == null ? '' : r[k]))], { file: 'API', sheet: table });
+}
+function workbook(snapshot, template = false) {
+  const wb = XLSX.utils.book_new(), sample = C.sample();
+  for (const [table, schema] of Object.entries(C.schemas)) {
+    const keys = Object.keys(schema.fields), rows = template ? [] : snapshot.tables[table];
+    const matrix = [keys.map(k => schema.fields[k].label), ...rows.map(r => keys.map(k => typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k] == null ? '' : r[k]))];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(matrix), table);
+  }
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+module.exports = { readFile, publicRows, workbook, parseCSV };

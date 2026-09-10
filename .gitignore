@@ -1,0 +1,22 @@
+# 数据文件（运行时生成）
+data/*
+!data/.gitkeep
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# 测试相关
+test-output/
+tests/
+*.log
+
+# 本地工具数据
+.workbuddy/
+
+# 旧版遗留页面
+index.legacy.html
+
+# 依赖与环境
+node_modules/
+.env
+.env.local

@@ -1,0 +1,69 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>???????????</title><link rel="stylesheet" href="base.css"><link rel="stylesheet" href="forecast.css"></head><body>
+<div class="app">
+
+  <!-- ============ 侧边导航 ============ -->
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0b1222" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/>
+        </svg>
+      </div>
+      <div class="bt">
+        <div class="t1">供应网络控制塔</div>
+        <div class="t2">RISK CONTROL TOWER</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-sec">运营监控</div>
+      <div class="nav-item active" data-tab="overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>
+        供应网络总览
+      </div>
+      <div class="nav-item" data-tab="simulate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
+        异常推演
+      </div>
+      <div class="nav-item" data-tab="reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>
+        分析报告
+        <span class="badge" id="nav-risk-count">0</span>
+      </div>
+      <div class="nav-sec">系统管理</div>
+      <div class="nav-item" data-tab="data">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.6"/><path d="M4.5 5.5v13c0 1.4 3.4 2.6 7.5 2.6s7.5-1.2 7.5-2.6v-13M4.5 12c0 1.4 3.4 2.6 7.5 2.6s7.5-1.2 7.5-2.6"/></svg>
+        数据管理
+      </div>
+      <div class="nav-item" data-tab="config">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h.01a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51h.01a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.01a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        参数配置
+      </div>
+    </nav>
+    <div class="foot">
+      <div><span class="dot"></span>引擎运行中</div>
+      <div id="foot-mode" style="font-family:var(--font-num);font-size:10.5px">LOCAL ENGINE</div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <div class="main">
+    <header class="topbar">
+      <h2 id="page-title">供应网络总览</h2>
+      <span class="crumb" id="page-crumb">Supply Network Overview</span>
+      <div class="spacer"></div>
+      <div class="tb-stat">
+        <span>编码 <b id="tb-codes">0</b></span>
+        <span class="sep"></span>
+        <span>BOM 边 <b id="tb-edges">0</b></span>
+        <span class="sep"></span>
+        <span>高风险 <b id="tb-high" style="color:#fb7185">0</b></span>
+      </div>
+      <span class="sep" style="width:1px;height:16px;background:var(--line)"></span>
+      <div class="sync"><span class="ico"></span><span id="tb-time">—</span></div>
+      <button class="btn ghost sm" id="btn-reset" title="恢复内置初始化数据">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        重置数据
+      </button>
+    </header>
+
+<main class="content" id="workspace"><div class="card card-bd">?????????</div></main></div></div><div id="msg" class="msg" role="status" aria-live="polite"></div><dialog id="modal"></dialog><script src="vendor/echarts.js"></script><script src="vendor/xlsx.js"></script><script src="vendor/g6.min.js"></script><script src="forecast-core.js"></script><script src="forecast-graph.js"></script><script src="forecast-app.js"></script></body></html>
