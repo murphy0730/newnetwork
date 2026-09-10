@@ -23,7 +23,7 @@ function auth(req) {
 class Lane {
   constructor() { this.pending = new Map(); this.spawn(); }
   spawn() {
-    this.worker = new Worker(path.join(__dirname, 'worker.js'), { workerData: { dbPath }, resourceLimits: { maxOldGenerationSizeMb: 1536 } });
+    this.worker = new Worker(path.join(__dirname, 'worker.js'), { workerData: { dbPath }, resourceLimits: { maxOldGenerationSizeMb: 6144 } });
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.ready.catch(() => {});
     this.worker.on('message', m => { if (m.ready) return this.resolveReady(); const p = this.pending.get(m.id); if (!p) return; this.pending.delete(m.id); if (m.error) p.reject(Object.assign(Error(m.error.message), m.error)); else p.resolve(m.result); });
@@ -37,7 +37,7 @@ const writer = new Lane();
 let reader;
 function json(res, status, value) { const body = JSON.stringify(value); res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(body); }
 async function body(req, binary = false) {
-  const chunks = []; let size = 0; for await (const c of req) { size += c.length; if (size > (binary ? 25 : 64) * 1024 * 1024) throw Object.assign(Error('请求数据过大'), { status: 413 }); chunks.push(c); }
+  const chunks = []; let size = 0; for await (const c of req) { size += c.length; if (size > (binary ? 512 : 64) * 1024 * 1024) throw Object.assign(Error('请求数据过大'), { status: 413 }); chunks.push(c); }
   const b = Buffer.concat(chunks); if (binary) return b;
   try { return b.length ? JSON.parse(b.toString('utf8')) : {}; } catch { throw Object.assign(Error('JSON请求格式错误'), { status: 400 }); }
 }

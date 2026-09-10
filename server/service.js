@@ -221,7 +221,7 @@ class Service {
     this.expire(); if (this.files.size >= 16) throw error('待导入文件过多，请完成或等待30分钟过期', 429);
     const sheets = Importer.readFile(body.name, body.bytes), id = randomUUID();
     const cells = sheets.reduce((sum, s) => sum + s.matrix.reduce((n, row) => n + row.length, 0), 0);
-    if (cells + [...this.files.values()].reduce((sum, f) => sum + f.cells, 0) > 12000000) throw error('待导入文件合计超过1200万单元格，请先完成当前批次', 429);
+    if (cells + [...this.files.values()].reduce((sum, f) => sum + f.cells, 0) > 100000000) throw error('待导入文件合计超过1亿单元格，请先完成当前批次', 429);
     this.files.set(id, { actor, name: body.name, sheets, cells, expires: Date.now() + 1800000 });
     return { id, name: body.name, sheets: sheets.map(s => ({ name: s.name, rows: Math.max(0, s.matrix.length - 1), detected: s.detected, preview: s.matrix.slice(0, 5) })) };
   }
