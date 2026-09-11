@@ -11,6 +11,7 @@
     "benchmark": "node tests/benchmark.js",
     "test:browser": "node tests/browser.js",
     "test:import-browser": "node tests/build-browser.js",
-    "benchmark:artifact": "node tests/artifact-benchmark.js"
+    "benchmark:artifact": "node tests/artifact-benchmark.js",
+    "benchmark:response": "node --max-old-space-size=8192 tests/response-benchmark.js"
   }
 }

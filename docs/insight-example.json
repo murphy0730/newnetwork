@@ -1,0 +1,401 @@
+{
+  "schemaVersion": "1.0",
+  "generator": {
+    "kind": "deterministic",
+    "label": "可核验规则洞察",
+    "rulesVersion": "insight-1",
+    "llmUsed": false
+  },
+  "code": "A",
+  "name": "共用模块",
+  "status": "risk",
+  "headline": "发现供需风险，建议核对计划",
+  "summary": "当月供应 1,000，上层折算需求 1,100，总量缺口 100。 所分析窗口的已知数据中，首个预测总量不足月份为 2026-09，最大缺口 100（2026-09），已确认最长连续 11 个月不足。",
+  "facts": [
+    {
+      "id": "supply_shortage",
+      "level": "risk",
+      "text": "当月供应 1,000，上层折算需求 1,100，总量缺口 100。",
+      "evidence": {
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "shortageRatio": 0.09090909090909091
+      }
+    },
+    {
+      "id": "inventory_coverage",
+      "level": "attention",
+      "text": "月初库存可覆盖当月总量缺口，但预测本身仍不匹配；月内产出时点尚未验证。",
+      "evidence": {
+        "inventory": 200,
+        "coverageGap": -100
+      }
+    },
+    {
+      "id": "lower_covered",
+      "level": "ok",
+      "text": "当前口径内 1 个下层均未发现月度总量缺口。",
+      "evidence": {
+        "dependencyCount": 1,
+        "shortageCount": 0
+      }
+    },
+    {
+      "id": "single_site",
+      "level": "attention",
+      "text": "当月正数量产出集中在一个加工地；这代表计划集中，尚不能证明无替代加工能力。",
+      "evidence": {
+        "sites": [
+          {
+            "code": "S1",
+            "key": "S1",
+            "name": "甲加工地",
+            "qty": 1000,
+            "suppliers": [
+              "供应商-S1"
+            ],
+            "share": 1
+          }
+        ],
+        "periodSingle": false
+      }
+    },
+    {
+      "id": "critical_path",
+      "level": "info",
+      "text": "按加工周期均值累计的最长依赖路径为 25 天；该数值未包含运输、排队及生产日历。",
+      "evidence": {
+        "path": [
+          "A",
+          "D"
+        ],
+        "knownDays": 25,
+        "days": 25,
+        "complete": true
+      }
+    },
+    {
+      "id": "cycle_variation",
+      "level": "attention",
+      "text": "该编码加工周期波动达到阈值，建议核对样本时段与近期表现；CV不等于延期概率。",
+      "evidence": {
+        "meanDays": 10,
+        "cv": 0.4,
+        "threshold": 0.3,
+        "sampleCount": 30
+      }
+    },
+    {
+      "id": "future_shortage",
+      "level": "risk",
+      "text": "所分析窗口的已知数据中，首个预测总量不足月份为 2026-09，最大缺口 100（2026-09），已确认最长连续 11 个月不足。",
+      "evidence": {
+        "firstMonth": "2026-09",
+        "peak": {
+          "month": "2026-09",
+          "supply": 1000,
+          "demand": 1100,
+          "gap": 100,
+          "complete": true,
+          "inventory": 200,
+          "coverageGap": -100
+        },
+        "longestConsecutiveMonths": 11,
+        "shortageMonths": 11
+      }
+    }
+  ],
+  "confidence": {
+    "supplyComplete": true,
+    "dependenciesComplete": true,
+    "inventoryKnown": true,
+    "sitesComplete": true,
+    "criticalPathComplete": true,
+    "missing": [],
+    "note": "完整性说明，不是预测准确率或概率评分。"
+  },
+  "scopeComparison": [
+    {
+      "mode": "direct",
+      "label": "直接父子",
+      "supply": 1000,
+      "demand": 1100,
+      "gap": 100,
+      "complete": true,
+      "applicable": true
+    },
+    {
+      "mode": "cross",
+      "label": "跨产业",
+      "supply": 1000,
+      "demand": 1100,
+      "gap": 100,
+      "complete": true,
+      "applicable": true
+    },
+    {
+      "mode": "top",
+      "label": "最顶层",
+      "supply": 1000,
+      "demand": 1100,
+      "gap": 100,
+      "complete": true,
+      "applicable": true
+    }
+  ],
+  "demandContributors": {
+    "total": 2,
+    "known": true,
+    "knownContribution": 1100,
+    "rows": [
+      {
+        "code": "B",
+        "coeff": 2,
+        "kind": "跨产业首个编码",
+        "name": "整机B",
+        "make_dept": "整机事业部",
+        "forecast": 400,
+        "netUsage": 400,
+        "contribution": 800,
+        "known": true,
+        "shareOfKnownDemand": 0.7272727272727273
+      },
+      {
+        "code": "C",
+        "coeff": 1,
+        "kind": "跨产业首个编码",
+        "name": "整机C",
+        "make_dept": "整机事业部",
+        "forecast": 300,
+        "netUsage": 300,
+        "contribution": 300,
+        "known": true,
+        "shareOfKnownDemand": 0.2727272727272727
+      }
+    ],
+    "truncated": false
+  },
+  "dependencies": {
+    "total": 1,
+    "shortageCount": 0,
+    "incompleteCount": 0,
+    "rows": [],
+    "truncated": false,
+    "allocation": false
+  },
+  "horizon": {
+    "requestedMonths": 11,
+    "analyzedMonths": 11,
+    "complete": true,
+    "timeline": [
+      {
+        "month": "2026-09",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2026-10",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2026-11",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2026-12",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-01",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-02",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-03",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-04",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-05",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-06",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      },
+      {
+        "month": "2027-07",
+        "supply": 1000,
+        "demand": 1100,
+        "gap": 100,
+        "complete": true,
+        "inventory": 200,
+        "coverageGap": -100
+      }
+    ],
+    "firstShortageMonth": "2026-09",
+    "peak": {
+      "month": "2026-09",
+      "supply": 1000,
+      "demand": 1100,
+      "gap": 100,
+      "complete": true,
+      "inventory": 200,
+      "coverageGap": -100
+    },
+    "longestConsecutiveMonths": 11,
+    "cumulative": {
+      "months": [
+        "2026-09",
+        "2026-10",
+        "2026-11",
+        "2026-12",
+        "2027-01",
+        "2027-02",
+        "2027-03",
+        "2027-04",
+        "2027-05",
+        "2027-06",
+        "2027-07"
+      ],
+      "complete": true,
+      "demand": 12100,
+      "supply": 11000,
+      "inventory": 200,
+      "gap": 1100,
+      "coverageGap": 900,
+      "firstShortage": "2026-11",
+      "minWater": -900
+    }
+  },
+  "actions": [
+    {
+      "id": "test_supply_increase",
+      "label": "模拟当月增加 100 产出",
+      "explanation": "这是当前总量平衡的测试值，未验证产能或自动批准增产。该编码作为需求方时，其下层需求也会变化，须查看推演结果。",
+      "endpoint": "/api/scenarios",
+      "method": "POST",
+      "requiresRole": "planner",
+      "request": {
+        "baseRevision": 1,
+        "version": "2026-09-11",
+        "month": "2026-09",
+        "mode": "cross",
+        "source": "forecast",
+        "type": "forecast",
+        "changes": [
+          {
+            "code": "A",
+            "month": "2026-09",
+            "operation": "add",
+            "value": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "review_demand",
+      "label": "核对上层需求贡献",
+      "explanation": "结合上层预测、BOM配比及计划依据判断合理性；系统不自动认定预测虚高。",
+      "endpoint": "/api/nodes",
+      "method": "GET",
+      "query": {
+        "code": "A",
+        "version": "2026-09-11",
+        "revision": 1,
+        "month": "2026-09",
+        "mode": "cross",
+        "source": "forecast"
+      }
+    }
+  ],
+  "limitations": [
+    "月度总量匹配不代表月内逐日供货或确定停线日期。",
+    "下层缺口是共享供应的全局总缺口，不是分配给当前编码的缺口。",
+    "不同编码可能采用不同计量单位，缺口不得跨编码简单相加。",
+    "关键路径基于BOM和加工周期均值；尚未建模运输、排队、并行资源与日历。",
+    "本结论由规则和数据生成，未调用外部大模型。"
+  ],
+  "evidenceLinks": {
+    "detail": "/api/nodes",
+    "network": "/api/graph",
+    "parameters": {
+      "code": "A",
+      "revision": 1,
+      "version": "2026-09-11",
+      "month": "2026-09",
+      "mode": "cross",
+      "source": "forecast"
+    }
+  },
+  "trace": {
+    "revision": 1,
+    "buildId": "5c54d879-5eb1-4160-8292-d9d08333b735",
+    "version": "2026-09-11",
+    "month": "2026-09",
+    "mode": "cross",
+    "source": "forecast",
+    "scenario": null,
+    "input_mode": "net",
+    "calculated_at": "2026-09-11T00:27:43.946Z"
+  },
+  "cache": {
+    "hit": false
+  }
+}

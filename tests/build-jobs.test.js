@@ -37,7 +37,10 @@ test('online builds release failed uploads, preserve baseline, reject stale acti
     assert.equal((await request(buildTask.poll)).canActivate, true);
     await stop(); start(); await ready();
     assert.ok((await request('/api/builds')).jobs.some(j => j.id === buildTask.jobId && j.result.previewId === preview.previewId));
-    assert.equal((await poll(await request('/api/import/commit', { previewId: preview.previewId }))).revision, 2);
+    const activation = await request('/api/import/commit', { previewId: preview.previewId });
+    assert.equal((await request('/api/import/commit', { previewId: preview.previewId })).jobId, activation.jobId);
+    assert.equal((await poll(activation)).revision, 2);
+    assert.equal((await request('/api/import/commit', { previewId: preview.previewId })).jobId, activation.jobId);
     assert.equal((await request(buildTask.poll)).canActivate, false);
     const page = await request('/api/analysis?version=2026-09-10&month=2026-09'); assert.equal(page.rows.find(r => r.code === 'RETRY').supply, 80);
     const exported = Buffer.from(await (await fetch(base + '/api/export?kind=artifact')).arrayBuffer());

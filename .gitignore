@@ -14,6 +14,7 @@ tests/*
 !tests/browser.js
 !tests/build-browser.js
 !tests/ui-browser.js
+!tests/response-benchmark.js
 *.log
 
 # 离线构建输入与运行产物
