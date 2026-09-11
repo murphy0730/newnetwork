@@ -86,7 +86,12 @@ async function readInputs(files, progress = () => {}) {
     const ext = path.extname(file.name || file.path).toLowerCase(), name = file.name || path.basename(file.path);
     const destination = table => { if (!groups.has(table)) groups.set(table, []); return groups.get(table); };
     if (ext === '.csv') {
-      const selected = (file.selections || [{ sheet: path.basename(name, ext), table: file.table, headerRow: file.headerRow }]).filter(s => s.table);
+      let selected = (file.selections || [{ sheet: path.basename(name, ext), table: file.table, headerRow: file.headerRow }]).filter(s => s.table);
+      if (!selected.length) { // 未指定目标表（如文件夹一键导入）：按前20行自动识别
+        const head = []; for await (const row of csvRows(file.path, { encoding: await encodingFor(file.path, true), maxRows: 20 })) head.push(row);
+        const detected = C.detect(head);
+        if (detected) selected = [{ sheet: path.basename(name, ext), table: detected.table, headerRow: detected.headerRow }];
+      }
       if (selected.length > 1) throw bad('同一CSV不能重复选择多个目标表');
       for (const selection of selected) { const stats = {}, rows = await normalize(csvRows(file.path, { encoding: await encodingFor(file.path), progress, stats }), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow }, destination(selection.table), progress); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); sources.push({ name, ...stats }); }
     } else if (['.xlsx', '.xls'].includes(ext)) {

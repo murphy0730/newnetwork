@@ -62,7 +62,7 @@ function job(res, method, args, user) {
   const task = method === 'simulate' ? buildJobs.create(user.actor, 'simulate', () => writer.call(method, args, user.actor)) : method === 'preview' ? buildJobs.preview(args, user.actor) : method === 'commit' ? buildJobs.commit(args, user.actor) : buildJobs.mutation(method, args, user.actor);
   json(res, 202, task);
 }
-const staticFiles = new Map([['/', 'index.html'], ['/index.html', 'index.html'], ['/base.css', 'base.css'], ['/forecast.css', 'forecast.css'], ['/forecast-app.js', 'forecast-app.js'], ['/forecast-core.js', 'forecast-core.js'], ['/forecast-graph.js', 'forecast-graph.js'], ['/vendor/echarts.js', 'vendor/echarts.js'], ['/vendor/xlsx.js', 'vendor/xlsx.js'], ['/vendor/g6.min.js', 'vendor/g6.min.js']]);
+const staticFiles = new Map([['/', 'index.html'], ['/index.html', 'index.html'], ['/base.css', 'base.css'], ['/forecast.css', 'forecast.css'], ['/forecast-app.js', 'forecast-app.js'], ['/forecast-core.js', 'forecast-core.js'], ['/forecast-layout.js', 'forecast-layout.js'], ['/forecast-graph.js', 'forecast-graph.js'], ['/vendor/echarts.js', 'vendor/echarts.js'], ['/vendor/xlsx.js', 'vendor/xlsx.js'], ['/vendor/g6.min.js', 'vendor/g6.min.js']]);
 const readRoutes = new Map([['/api/meta', 'meta'], ['/api/analysis', 'list'], ['/api/nodes', 'detail'], ['/api/insights', 'insights'], ['/api/graph', 'graph'], ['/api/reports', 'report'], ['/api/tables', 'table']]);
 const writeRoutes = new Map([['/api/import/preview', ['preview', 'admin']], ['/api/import/commit', ['commit', 'admin']], ['/api/config', ['config', 'admin']], ['/api/sample', ['sample', 'admin']], ['/api/sample-large', ['sampleLarge', 'admin']], ['/api/restore', ['restore', 'admin']], ['/api/scenarios', ['simulate', 'planner']]]);
 writeRoutes.set('/api/maintain', ['maintain', 'admin']);
@@ -127,6 +127,23 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/api/export' && req.method === 'GET' && q.kind === 'data' && Object.values(catalog.info().counts).some(n => n >= 1000000)) throw Object.assign(Error('当前数据超过单张Excel工作表容量，请下载完整构建产物或按表导出CSV'), { status: 422 });
     if (pathname === '/api/export' && req.method === 'GET') { const bytes = await reader.call('export', q, user.actor); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="supply-data.xlsx"' }); res.end(Buffer.from(bytes)); return; }
+    if (pathname === '/api/import/folder') {
+      const dir = process.env.IMPORT_DIR ? path.resolve(process.env.IMPORT_DIR) : path.join(root, 'import');
+      fs.mkdirSync(dir, { recursive: true });
+      const files = fs.readdirSync(dir).filter(f => ['.csv', '.xlsx', '.xls'].includes(path.extname(f).toLowerCase()));
+      if (req.method === 'GET') return json(res, 200, { dir, files: files.map(f => ({ name: f, bytes: fs.statSync(path.join(dir, f)).size })) });
+      if (req.method !== 'POST') throw Object.assign(Error('接口不存在'), { status: 404 });
+      requireRole(user, 'admin');
+      // 一键导入：文件夹内全部表格作为同一批次，自动识别工作表、校验、构建并原子发布
+      if (!files.length) throw Object.assign(Error('import 文件夹中还没有表格文件。请把 CSV / Excel 放入 ' + dir + ' 后再点击'), { status: 422 });
+      const baseRevision = catalog.revision(), output = path.join(catalog.artifactDir, randomUUID() + '.supply');
+      const inputs = files.map(f => ({ path: path.join(dir, f), name: f }));
+      return json(res, 202, buildJobs.create(user.actor, 'build', async (job, progress) => {
+        progress({ phase: 'read', message: `读取 import 文件夹：${files.join('、')}`, percent: 2 });
+        await buildJobs.child(job, { operation: 'preview', files: inputs, body: { baseRevision }, base: { dbPath: catalog.path, revision: baseRevision }, output }, progress);
+        return buildJobs.activate(output, baseRevision, user.actor, 'import-folder', progress, job);
+      }, [output + '.partial', output + '.partial-journal'], false, [output]));
+    }
     if (pathname === '/api/import/file' && req.method === 'POST') { requireRole(user, 'admin'); const item = await buildJobs.receive(req, String(q.name || ''), user.actor); return json(res, 202, buildJobs.upload(item)); }
     if (pathname === '/api/import/artifact' && req.method === 'POST') { requireRole(user, 'admin'); const revision = q.baseRevision == null ? catalog.revision() : Number(q.baseRevision); const item = await buildJobs.receive(req, String(q.name || ''), user.actor, true); return json(res, 202, buildJobs.uploadArtifact(item, revision)); }
     if (writeRoutes.has(pathname) && req.method === 'POST') { const [method, role] = writeRoutes.get(pathname); requireRole(user, role); return job(res, method, await body(req), user); }

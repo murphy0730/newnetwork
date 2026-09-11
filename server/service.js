@@ -153,17 +153,22 @@ class Service {
   meta(actor) {
     const revision = this.store.revision();
     if (this.metaCache?.revision === revision) return this.metaCache;
-    this.metaCache = this.store.info();
+    const info = this.store.info();
+    if (!info.categories) info.categories = [...new Set(this.store.table('attributes', null, 0, 1000000).rows.map(r => r.part_category).filter(Boolean))].sort(); // 旧构建的兜底
+    this.metaCache = info;
     return this.metaCache;
   }
   list(q, actor) {
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [] };
-    const indexed = Query.view(engine, month, mode, source), dashboard = indexed.dashboard;
+    const indexed = Query.view(engine, month, mode, source);
     let input = indexed.rows;
     if (q.role === 'demand' && q.code) {
       if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
       input = Query.dependencies(engine, q.code, month, mode, source).sort(Query.compare);
     }
+    // 汇总卡片随维度筛选（加工地/产业/大类/搜索/角色）联动；不随风险筛选变化，否则点选某风险卡后其他卡片会归零
+    const dimensioned = Query.filter(indexed, { ...q, risk: '' }, engine, input);
+    const dashboard = Query.summarize(dimensioned, engine);
     const rows = Query.filter(indexed, q, engine, input);
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
     return { trace, dashboard, total, offset, limit, months: engine.months, rows: rows.slice(offset, offset + limit).map(r => this.compact(r)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' };
@@ -179,29 +184,28 @@ class Service {
     return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, source: r._source })) };
   }
   graph(q, actor) {
-    const { engine: e, month, mode, source, trace } = this.context(q, actor), limit = int(q.limit, 500, 1, 1000), depth = int(q.depth, 3, 1, 10);
-    let visible, truncated = false;
+    const { engine: e, month, mode, source, trace } = this.context(q, actor), depth = int(q.depth, 3, 1, 10);
+    let visible, matches;
     if (q.code && !e.orderIndex.has(q.code)) throw error('编码不存在', 404);
     if (q.code) {
       visible = new Set([q.code]); let queue = [q.code];
-      for (let d = 0; d < depth; d++) { const next = []; for (const c of queue) for (const edge of [...e.graph.parents.get(c), ...e.graph.children.get(c)]) { const id = edge.parent === c ? edge.child : edge.parent; if (visible.has(id)) continue; if (visible.size >= limit) { truncated = true; continue; } visible.add(id); next.push(id); } queue = next; }
-    } else {
-      const list = this.list({ ...q, limit, offset: 0 }, actor);
-      const filtered = !!(q.risk || q.search || q.site || q.industry);
-      if (filtered) {
-        // 风险/搜索等过滤视图严格只展示匹配节点
-        visible = new Set(list.rows.map(r => r.code)); truncated = list.total > visible.size;
-      } else {
-        // 编码规模大时按缺口排序截取会只剩末端层级、链路断裂；先取高缺口编码，再沿折叠关系向上补齐父项，保住可视链路
-        const primary = list.rows.slice(0, Math.floor(limit * 0.6));
-        visible = new Set(primary.map(r => r.code)); truncated = list.total > visible.size;
-        for (const r of primary) {
-          for (const rel of e.relations(r.code, mode)) {
-            if (visible.size >= limit) { truncated = true; break; }
-            if (!visible.has(rel.code) && e.orderIndex.has(rel.code)) visible.add(rel.code);
-          }
-          if (visible.size >= limit) { truncated = true; break; }
+      for (let d = 0; d < depth && queue.length; d++) {
+        const next = [];
+        for (const c of queue) for (const edge of [...e.graph.parents.get(c), ...e.graph.children.get(c)]) {
+          const id = edge.parent === c ? edge.child : edge.parent;
+          if (!visible.has(id)) { visible.add(id); next.push(id); }
         }
+        queue = next;
+      }
+      matches = new Set(visible);
+    } else {
+      const indexed = Query.view(e, month, mode, source);
+      matches = new Set(Query.filter(indexed, q, e).map(r => r.code));
+      visible = new Set(matches);
+      // Dimension filters retain one-hop BOM context; risk filters stay strict.
+      if (!q.risk && matches.size !== e.graph.codes.length) for (const c of matches) {
+        for (const edge of e.graph.parents.get(c)) visible.add(edge.parent);
+        for (const edge of e.graph.children.get(c)) visible.add(edge.child);
       }
     }
     const paths = q.code ? e.paths(q.code, month, mode, source) : null, criticalEdges = new Set(), riskEdges = new Set();
@@ -212,7 +216,7 @@ class Service {
       const rs = raw ? e.graph.parents.get(code).map(r => ({ code: r.parent, coeff: r.qty, kind: 'BOM' })) : e.relations(code, mode);
       for (const r of rs) if (visible.has(r.code)) links.push({ source: r.code, target: code, qty: r.coeff, kind: r.kind, critical: criticalEdges.has(JSON.stringify([r.code, code])), risk: riskEdges.has(JSON.stringify([r.code, code])) });
     }
-    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), local: e.local(code) ?? null })), edges: links.slice(0, 5000), truncated: truncated || links.length > 5000, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
+    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), matched: matches.has(code), local: e.local(code) ?? null })), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
   }
   report(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), indexed = Query.view(e, month, mode, source), rows = indexed.rows, sites = new Map();
