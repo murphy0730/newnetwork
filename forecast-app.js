@@ -11,12 +11,12 @@
   const state = { tab: 'overview', version: '', month: '', mode: 'direct', source: 'forecast', role: 'supply', code: '', search: '', risk: '', site: '', layout: 'force', cluster: 'none', colorBy: 'level', depth: 3, highlight: '', span: 3, offset: 0, scenario: '', graphRelations: 'scope', filterOpen: true, edgeOpacity: 0.8, showKpi: true, showRatio: null };
   // KPI 卡片 → 服务端风险过滤口径；点击卡片即过滤网络图节点，再次点击取消
   const KPI_FILTERS = { total: '', shortage: 'shortage', coverageShortage: 'coverage', single: 'single', concentrated: 'concentrated', incomplete: 'incomplete' };
-  let meta, user, gGraph, heatChart, renderId = 0, lastRows = [], simResult, lastGraph, activeJob = false;
+  let meta, user, gGraph, heatChart, renderId = 0, lastRows = [], simResult, lastGraph, activeJob = false, lastPrepKey = '';
   const modes = [['direct', '直接父子'], ['cross', '跨产业'], ['top', '最顶层']];
   function notify(message, type = '') { $('msg').textContent = message; $('msg').className = 'msg show ' + type; clearTimeout(notify.timer); notify.timer = setTimeout(() => $('msg').className = 'msg', 6000); }
   async function api(path, data, raw) {
     const res = await fetch(path, data === undefined ? {} : { method: 'POST', headers: { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }, body: raw ? data : JSON.stringify(data) });
-    const b = await res.json(); if (!res.ok) throw Object.assign(Error(b.error?.message || '请求失败'), { details: b.error?.details, status: res.status });
+    const b = await res.json(); if (!res.ok) { const hint = { 409: '数据版本已变化，请刷新后重试', 429: '计算队列繁忙，请稍后重试', 503: '数据正在装载或恢复，请稍后重试', 504: '执行超时，建议缩小范围后重试' }[res.status]; throw Object.assign(Error([b.error?.message, hint].filter(Boolean).join('；') || '请求失败'), { details: b.error?.details, status: res.status, requestId: b.error?.requestId || res.headers.get('X-Request-ID') }); }
     if (res.status !== 202) return b;
     let j;
     do { await new Promise(r => setTimeout(r, 500)); const response = await fetch('/api/jobs/' + b.jobId); if (!response.ok) throw Error('后台任务查询失败，可到数据管理查看任务记录'); j = await response.json(); if (j.status === 'running') { const message = `${j.message || '后台处理中'}${j.percent != null ? ' · ' + j.percent + '%' : ''}`; notify(message); if ($('import-feedback')) $('import-feedback').textContent = message; } } while (j.status === 'running');
@@ -56,10 +56,15 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     return items.map(([l, v, cls, key]) => { const f = KPI_FILTERS[key]; return `<div class="kpi ${cls}${f && state.risk === f ? ' active' : ''}" data-key="${key}" title="${key === 'total' ? '点击清除风险过滤，展示全部节点' : `点击仅展示「${l}」节点，再次点击取消`}"><div class="kv"><span class="num">${fmt(v)}</span><span class="unit">个</span></div><div class="lbl">${l}</div></div>`; }).join('');
   }
   function legendHtml() {
-    if (state.colorBy === 'risk') return `<span class="lg"><span class="sw" style="background:#e24b4a"></span>总量不足</span><span class="lg"><span class="sw" style="background:#f4c463"></span>单一加工地</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>正常</span><span class="lg"><span class="sw" style="background:#64748b"></span>数据不完整</span>`;
-    if (state.colorBy === 'site') return `<span class="lg"><span class="sw" style="background:#67a7f5"></span>按加工地染色</span>`;
-    if (state.colorBy === 'none') return `<span class="lg"><span class="sw" style="background:#7788a0"></span>统一色</span>`;
-    return `<span class="lg"><span class="sw" style="background:#4A90E2"></span>成品</span><span class="lg"><span class="sw" style="background:#E8A33D"></span>半成品</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>原材料</span><span class="lg"><span class="sw" style="background:#7788a0"></span>更深层</span><span class="lg"><span class="sw dash"></span>跨产业边界</span>`;
+    let base;
+    if (state.colorBy === 'risk') base = `<span class="lg"><span class="sw" style="background:#e24b4a"></span>总量不足</span><span class="lg"><span class="sw" style="background:#f4c463"></span>单一加工地</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>正常</span><span class="lg"><span class="sw" style="background:#64748b"></span>数据不完整</span>`;
+    else if (state.colorBy === 'site') base = `<span class="lg"><span class="sw" style="background:#67a7f5"></span>按加工地染色</span>`;
+    else if (state.colorBy === 'none') base = `<span class="lg"><span class="sw" style="background:#7788a0"></span>统一色</span>`;
+    else base = `<span class="lg"><span class="sw" style="background:#4A90E2"></span>成品</span><span class="lg"><span class="sw" style="background:#E8A33D"></span>半成品</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>原材料</span><span class="lg"><span class="sw" style="background:#7788a0"></span>更深层</span><span class="lg"><span class="sw dash"></span>跨产业边界</span>`;
+    if (state.highlight === 'critical') base += `<span class="lg"><span class="sw" style="background:#5eead4"></span>关键路径：按加工周期均值累计的最长链路</span>`;
+    if (state.highlight === 'risk') base += `<span class="lg"><span class="sw" style="background:#fbbf24"></span>风险路径：存在数量、加工地或周期风险的链路</span>`;
+    if (state.cluster === 'site') base += `<span class="lg" style="color:var(--ink-4)">一个编码可属于多个加工地组</span>`;
+    return base;
   }
   function updateSeg(container, active) { container.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === active)); }
   async function renderOverview(id) {
@@ -99,13 +104,69 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
   const dtTable = (heads, rows) => `<table class="dt-table"><thead><tr>${heads.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${heads.length}" class="fc-muted">暂无数据</td></tr>`}</tbody></table>`;
   async function renderDetail(id, code = state.code) {
     const d = await api('/api/nodes?' + query({ code, span: state.span })); if (id !== renderId || !$('detail-body')) return;
-    $('detail-body').innerHTML = `<div class="dt-hero"><div class="fc-row"><div class="code">${esc(d.code)}</div><span class="spacer"></span><button class="btn ghost sm" id="as-demand">作为需求方</button></div><div class="name">${esc(d.name || '未维护名称')}${d.make_dept ? ' · ' + esc(d.make_dept) : ''}</div><div class="tags">${d.risks.map(x => pill(x, x.includes('不足') ? 'danger' : 'warn')).join('') || pill('无风险')}</div></div><div class="dt-metrics">${[[fmt(d.supply), '当月净供应'], [fmt(d.demand), '上层总需求'], [gap(d.gap), '预测缺口'], [fmt(d.inventory), '月初库存'], [gap(d.coverageGap), '库存后缺口'], [d.critical?.complete ? fmt(d.critical.days) + ' 天' : '—', '周期关键路径']].map(([n, l]) => `<div class="dt-metric"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('')}</div><div class="dt-block"><h4>基础信息</h4><div class="dt-kv"><span class="k">制造部门</span><span class="v">${esc(d.make_dept || '未维护')}</span><span class="k">原始预测 / 添加</span><span class="v">${fmt(d.raw)} / ${fmt(d.add)}</span><span class="k">使用方剔除</span><span class="v">${fmt(d.remove)}</span><span class="k">加工周期</span><span class="v">${fmt(d.lead_mean)} 天 · CV ${fmt(d.lead_cv)}</span><span class="k">统计样本</span><span class="v">${fmt(d.attributes.sample_count)} / ${esc(d.attributes.source || '未说明来源')}</span><span class="k">期间单一加工地</span><span class="v">${d.periodSites.single ? '是（当前预测版本）' : d.periodSites.complete ? '否' : '数据不完整 / 无产出'}</span></div></div><div class="dt-block"><h4>周期关键路径</h4><p class="fc-muted">${(d.critical?.path || []).map(codeLink).join(' → ') || '周期缺失，无法确认最长链路'}</p><p class="fc-muted">${fmt(d.riskNodeCount)} 个链路节点存在数量、加工地或周期风险。</p></div><div class="dt-block"><h4>上层需求贡献（${d.targetCount}）</h4>${dtTable(['计算对象', '累计用量', '净需求贡献'], d.targets.map(r => [codeLink(r.code) + '<br>' + esc(r.kind), fmt(r.coeff), fmt(r.demand)]))}</div><div class="dt-block"><h4>当月加工地分布</h4>${dtTable(['加工地', '预测数量', '占比'], d.sites.map(s => [esc(s.name) + '<br><small>' + esc(s.code) + '</small>', fmt(s.qty), pct(s.share)]))}${d.unassigned ? `<p class="fc-notice warn">${fmt(d.unassigned)} 数量未归属加工地，不能确定单一供应。</p>` : ''}</div><div class="dt-block"><h4>逐月匹配</h4>${dtTable(['月份', '供应', '需求', '预测缺口', '库存后缺口', '单一加工地'], d.details.map(r => [esc(r.month), fmt(r.supply), fmt(r.demand), gap(r.gap), gap(r.coverageGap), r.single ? '是' : r.siteComplete ? '否' : '未知']))}</div><div class="dt-block"><h4>累计覆盖</h4><div class="fc-controls" style="padding:0 0 10px">${select('sc-span', '从当前月累计', [[3, '3个月'], [6, '6个月'], [11, '11个月']], state.span)}</div>${d.cumulative ? `<p class="fc-muted">仅计起始月库存 ${fmt(d.cumulative.inventory)}，期间净供应 ${fmt(d.cumulative.supply)}，需求 ${fmt(d.cumulative.demand)}，覆盖缺口 ${gap(d.cumulative.coverageGap)}。${d.cumulative.complete ? '首次累计缺口月份：' + esc(d.cumulative.firstShortage || '无') : '所选跨度数据不完整，未补零。'}</p>` : '<p class="fc-muted">指令模式暂按单月库存快照检查。</p>'}</div><div class="dt-block"><details class="fc-source-list"><summary>预测来源（最多100行）</summary>${dtTable(['数量', '加工地', '源文件 / 行'], d.sources.map(r => [fmt(r.qty), esc(r.site_name || r.site_code), esc(r.source ? r.source.file + ' / ' + r.source.sheet + ' / ' + r.source.row : '示例/维护')]))}</details></div>`;
+    $('detail-body').innerHTML = `<div id="insight-body" role="status" aria-live="polite"><div class="fc-muted" style="padding:14px 18px">正在生成规则洞察…</div></div><div class="dt-hero"><div class="fc-row"><div class="code">${esc(d.code)}</div><span class="spacer"></span><button class="btn ghost sm" id="as-demand">作为需求方</button></div><div class="name">${esc(d.name || '未维护名称')}${d.make_dept ? ' · ' + esc(d.make_dept) : ''}</div>${trace(d.trace)}<div class="tags">${d.risks.map(x => pill(x, x.includes('不足') ? 'danger' : 'warn')).join('') || pill('无风险')}</div></div><div class="dt-metrics">${[[fmt(d.supply), '当月净供应'], [fmt(d.demand), '上层总需求'], [gap(d.gap), '预测缺口'], [fmt(d.inventory), '月初库存'], [gap(d.coverageGap), '库存后缺口'], [d.critical?.complete ? fmt(d.critical.days) + ' 天' : '—', '周期关键路径']].map(([n, l]) => `<div class="dt-metric"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('')}</div><div class="dt-block"><h4>基础信息</h4><div class="dt-kv"><span class="k">制造部门</span><span class="v">${esc(d.make_dept || '未维护')}</span><span class="k">原始预测 / 添加</span><span class="v">${fmt(d.raw)} / ${fmt(d.add)}</span><span class="k">使用方剔除</span><span class="v">${fmt(d.remove)}</span><span class="k">加工周期</span><span class="v">${fmt(d.lead_mean)} 天 · CV ${fmt(d.lead_cv)}</span><span class="k">统计样本</span><span class="v">${fmt(d.attributes.sample_count)} / ${esc(d.attributes.source || '未说明来源')}</span><span class="k">期间单一加工地</span><span class="v">${d.periodSites.single ? '是（当前预测版本）' : d.periodSites.complete ? '否' : '数据不完整 / 无产出'}</span></div></div><div class="dt-block"><h4>周期关键路径</h4><p class="fc-muted">${(d.critical?.path || []).map(codeLink).join(' → ') || '周期缺失，无法确认最长链路'}</p><p class="fc-muted">${fmt(d.riskNodeCount)} 个链路节点存在数量、加工地或周期风险。</p></div><div class="dt-block" id="sec-targets"><h4>上层需求贡献（${d.targetCount}）</h4>${dtTable(['计算对象', '累计用量', '净需求贡献'], d.targets.map(r => [codeLink(r.code) + '<br>' + esc(r.kind), fmt(r.coeff), fmt(r.demand)]))}</div><div class="dt-block"><h4>当月加工地分布</h4>${dtTable(['加工地', '预测数量', '占比'], d.sites.map(s => [esc(s.name) + '<br><small>' + esc(s.code) + '</small>', fmt(s.qty), pct(s.share)]))}${d.unassigned ? `<p class="fc-notice warn">${fmt(d.unassigned)} 数量未归属加工地，不能确定单一供应。</p>` : ''}</div><div class="dt-block"><h4>逐月匹配</h4>${dtTable(['月份', '供应', '需求', '预测缺口', '库存后缺口', '单一加工地'], d.details.map(r => [esc(r.month), fmt(r.supply), fmt(r.demand), gap(r.gap), gap(r.coverageGap), r.single ? '是' : r.siteComplete ? '否' : '未知']))}</div><div class="dt-block"><h4>累计覆盖</h4><div class="fc-controls" style="padding:0 0 10px">${select('sc-span', '从当前月累计', [[3, '3个月'], [6, '6个月'], [11, '11个月']], state.span)}</div>${d.cumulative ? `<p class="fc-muted">仅计起始月库存 ${fmt(d.cumulative.inventory)}，期间净供应 ${fmt(d.cumulative.supply)}，需求 ${fmt(d.cumulative.demand)}，覆盖缺口 ${gap(d.cumulative.coverageGap)}。${d.cumulative.complete ? '首次累计缺口月份：' + esc(d.cumulative.firstShortage || '无') : '所选跨度数据不完整，未补零。'}</p>` : '<p class="fc-muted">指令模式暂按单月库存快照检查。</p>'}</div><div class="dt-block"><details class="fc-source-list"><summary>预测来源（最多100行）</summary>${dtTable(['数量', '加工地', '源文件 / 行'], d.sources.map(r => [fmt(r.qty), esc(r.site_name || r.site_code), esc(r.source ? r.source.file + ' / ' + r.source.sheet + ' / ' + r.source.row : '示例/维护')]))}</details></div>`;
     bindCodes($('detail-body')); $('as-demand').onclick = () => { state.code = code; state.role = 'demand'; state.offset = 0; render(); }; $('sc-span').onchange = () => { state.span = Number($('sc-span').value); renderDetail(id, code).catch(showError); };
+    renderInsight(id, code);
+  }
+  // ============ 业务洞察（规则生成 · 可核验） ============
+  const STATUS_TEXT = { risk: ['存在风险', 'is-risk'], attention: ['需要关注', 'is-attention'], covered: ['未见缺口', 'is-ok'], unknown: ['数据不完整', 'is-unknown'] };
+  const LEVEL_TEXT = { risk: '缺口', attention: '关注', unknown: '未知', ok: '正常', info: '信息' };
+  const LEVEL_ORDER = { risk: 0, attention: 1, unknown: 2, ok: 3, info: 4 };
+  let insightSeq = 0, insightCtrl = null, pendingSim = null;
+  const evVal = v => v == null ? '未知' : typeof v === 'object' ? esc(JSON.stringify(v)) : esc(typeof v === 'number' ? fmt(v) : v);
+  async function renderInsight(id, code) {
+    const seq = ++insightSeq;
+    if (insightCtrl) insightCtrl.abort();
+    const ctrl = insightCtrl = new AbortController();
+    try {
+      const res = await fetch('/api/insights?' + query({ code }), { signal: ctrl.signal });
+      const b = await res.json();
+      if (!res.ok) throw Object.assign(Error(b.error?.message || '洞察生成失败'), { status: res.status, requestId: b.error?.requestId });
+      if (seq !== insightSeq || id !== renderId || !$('insight-body')) return; // 过期响应不得覆盖新选择
+      $('insight-body').innerHTML = insightHtml(b);
+      bindInsightActions(b);
+    } catch (e) {
+      if (e.name === 'AbortError' || seq !== insightSeq || !$('insight-body')) return;
+      $('insight-body').innerHTML = `<div class="ins-card"><div class="fc-notice error">洞察生成失败：${esc(e.message)}${e.requestId ? `<small class="fc-muted">（问题详情：请求 ${esc(e.requestId)}）</small>` : ''} <button class="btn ghost sm" id="ins-retry">重试</button></div></div>`;
+      if ($('ins-retry')) $('ins-retry').onclick = () => renderInsight(id, code);
+    }
+  }
+  function insightHtml(ins) {
+    const [stText, stCls] = STATUS_TEXT[ins.status] || STATUS_TEXT.unknown;
+    const prio = [...ins.facts].sort((a, b) => (LEVEL_ORDER[a.level] ?? 9) - (LEVEL_ORDER[b.level] ?? 9)).slice(0, 3);
+    const factRow = f => `<div class="ins-fact lv-${esc(f.level)}"><span class="ins-lv">${LEVEL_TEXT[f.level] || esc(f.level)}</span><span>${esc(f.text)}</span></div>`;
+    const evTable = ev => `<table class="dt-table"><tbody>${Object.entries(ev || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${evVal(v)}</td></tr>`).join('')}</tbody></table>`;
+    const sc = ins.scopeComparison || [];
+    const conf = ins.confidence || {}, knownList = [['供需匹配', conf.supplyComplete], ['下层依赖', conf.dependenciesComplete], ['月初库存', conf.inventoryKnown], ['加工地', conf.sitesComplete], ['关键路径周期', conf.criticalPathComplete]];
+    const tl = ins.horizon?.timeline || [], dep = ins.dependencies || {}, dc = ins.demandContributors || {};
+    return `<div class="ins-card ${stCls}">
+      <div class="ins-hd"><strong>业务洞察</strong><span class="ins-status ${stCls}">${stText}</span><span class="spacer"></span><span class="ins-gen">${esc(ins.generator?.label || '规则洞察')} · ${ins.generator?.llmUsed ? '模型生成' : '规则生成 · 可核验'}</span></div>
+      <div class="ins-headline">${esc(ins.headline)}</div>
+      <p class="ins-summary">${esc(ins.summary)}</p>
+      <div class="ins-facts">${prio.map(factRow).join('')}</div>
+      <div class="ins-actions">${(ins.actions || []).map((a, i) => `<button class="btn ${i === 0 ? 'primary' : 'ghost'} sm" data-ins-act="${i}" ${a.requiresRole === 'planner' && !['admin', 'planner'].includes(user.role) ? 'disabled' : ''} title="${esc(a.explanation || '')}">${esc(a.label)}</button>`).join('')}</div>
+      <details class="ins-sec"><summary>查看依据（${ins.facts.length} 条事实与证据）</summary>${ins.facts.map(f => `<div class="ins-fact lv-${esc(f.level)}"><span class="ins-lv">${LEVEL_TEXT[f.level] || esc(f.level)}</span><span>${esc(f.text)}</span></div>${evTable(f.evidence)}`).join('')}</details>
+      ${tl.length ? `<details class="ins-sec"><summary>月份趋势（${ins.horizon.analyzedMonths}/${ins.horizon.requestedMonths} 月已知）</summary>${dtTable(['月份', '供应', '需求', '预测缺口', '库存后缺口'], tl.map(r => [esc(r.month), fmt(r.supply), fmt(r.demand), r.complete ? gap(r.gap) : '未知', r.complete ? gap(r.coverageGap) : '未知']))}${ins.horizon.cumulative ? `<p class="fc-muted">起始库存 ${fmt(ins.horizon.cumulative.inventory)}，窗口累计供应 ${fmt(ins.horizon.cumulative.supply)} / 需求 ${fmt(ins.horizon.cumulative.demand)}，覆盖缺口 ${gap(ins.horizon.cumulative.coverageGap)}${ins.horizon.cumulative.firstShortage ? '，首次累计缺口 ' + esc(ins.horizon.cumulative.firstShortage) : ''}。</p>` : ''}</details>` : ''}
+      ${dc.total ? `<details class="ins-sec"><summary>上层需求贡献（前 ${dc.rows.length} / 共 ${dc.total}${dc.truncated ? '，已截断' : ''}）</summary>${dtTable(['计算对象', '配比', '净需求贡献', '占已知贡献'], dc.rows.map(r => [codeLink(r.code) + ' ' + esc(r.name || ''), fmt(r.coeff), fmt(r.contribution), pct(r.shareOfKnownDemand)]))}<p class="fc-muted">占比为已知需求贡献占比，不代表缺口责任。</p></details>` : ''}
+      ${sc.length ? `<details class="ins-sec"><summary>三种口径对比（不可相加）</summary>${dtTable(['口径', '供应', '需求', '缺口', '数据'], sc.map(r => [esc(r.label), fmt(r.supply), fmt(r.demand), r.complete ? gap(r.gap) : '未知', r.applicable ? (r.complete ? '完整' : '不完整') : '无BOM上层，不适用']))}</details>` : ''}
+      ${dep.total ? `<details class="ins-sec"><summary>当月下层总量缺口（${dep.shortageCount} / ${dep.total}${dep.truncated ? '，已截断' : ''}）</summary>${dep.rows.length ? dtTable(['下层编码', '供应', '需求', '总缺口'], dep.rows.map(r => [codeLink(r.code) + ' ' + esc(r.name || ''), fmt(r.supply), fmt(r.demand), gap(r.gap)])) : '<p class="fc-muted">当月相关下层均未发现总量缺口。</p>'}<p class="fc-muted">各缺口是该下层对全部相关上层的总缺口，不是分配给当前编码的量，不得跨编码相加。</p></details>` : ''}
+      <div class="ins-conf">已确认：${knownList.filter(([, v]) => v).map(([k]) => k).join('、') || '无'}；未知：${knownList.filter(([, v]) => !v).map(([k]) => k).join('、') || '无'}。<small class="fc-muted">${esc(conf.note || '')}</small></div>
+      <details class="ins-sec"><summary>口径与限制说明</summary><ul class="ins-limits">${(ins.limitations || []).map(l => `<li>${esc(l)}</li>`).join('')}</ul></details>
+    </div>`;
+  }
+  function bindInsightActions(ins) {
+    document.querySelectorAll('[data-ins-act]').forEach(btn => btn.onclick = () => {
+      const a = ins.actions[Number(btn.dataset.insAct)];
+      if (!a) return;
+      if (a.id === 'test_supply_increase') { pendingSim = { request: a.request, label: a.label }; state.tab = 'simulate'; render(); notify('已填入推演表单，请确认后执行；这只是总量平衡测试值，未验证真实产能'); }
+      else if (a.id === 'review_demand') { $('sec-targets')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      else if (a.id === 'review_lower') { state.role = 'demand'; state.code = ins.code; state.offset = 0; render(); }
+    });
   }
 async function drawGraphRequest(id) {
     const d = await api('/api/graph?' + query({ code: state.code, depth: state.depth, limit: 1000, search: state.search, site: state.site, risk: state.risk, graphRelations: state.graphRelations }));
     if (id !== renderId || !$('graph-container')) return; lastGraph = d;
-    $('g-count').textContent = `${d.nodes.length} 节点 / ${d.edges.length} 边${d.truncated ? ' · 已限制显示范围' : ''}`;
+    $('g-count').textContent = `当前显示 ${d.nodes.length} 个 / 全部 ${d.totalNodes} 个 · ${d.edges.length} 边${d.truncated ? '，已按范围截取' : ''}`;
     $('g-legend').innerHTML = legendHtml();
     if (!gGraph) gGraph = new window.ForecastGraph($('graph-container'), {
       onNodeClick: (code) => { $('ov-root')?.classList.remove('d-off'); renderDetail(id, code).catch(showError); },
@@ -209,13 +270,23 @@ async function drawGraphRequest(id) {
   }
   function renderSimulate() {
     if (!state.month) state.month = meta.months[0];
-    $('workspace').innerHTML = `<div class="fc-stack"><div class="fc-card"><h3 class="fc-title">预测增减与异常推演</h3><p class="fc-muted">复用已计算基线与BOM索引，只重算修改涉及的月份。情景绑定数据版本，业务和AI使用相同结果。</p>${controls(meta.months)}<p class="fc-notice">推演结果不会修改基线。系统暴露风险与需求贡献，不分配共用料缺口、不自动判定哪个上层预测虚高。</p></div><div class="fc-card"><div class="fc-controls">${select('sim-type', '情景类型', [['forecast', '预测增加 / 减少'], ['quality', '产出损失 / 质量异常'], ['outage', '加工地停工 / 延期']], 'forecast')}</div><div id="sim-form"></div><div class="fc-controls"><label>情景说明<input id="sim-note" placeholder="如上层预测提高20%"></label><button class="btn primary" id="sim-run" ${['admin', 'planner'].includes(user.role) ? '' : 'disabled'}>执行独立推演</button></div><p class="fc-muted" id="sim-assumption"></p></div><div id="sim-output"></div></div>`;
-    bindControls(); let edits = [{ code: state.code, month: state.month, operation: 'percent', value: 10, site_code: '' }];
+    $('workspace').innerHTML = `<div class="fc-stack"><div class="fc-card"><h3 class="fc-title">预测增减与异常推演</h3><p class="fc-muted">复用已计算基线与BOM索引，只重算修改涉及的月份。情景绑定数据版本，业务和AI使用相同结果。</p>${controls(meta.months)}<p class="fc-notice">推演结果不会修改基线。系统暴露风险与需求贡献，不分配共用料缺口、不自动判定哪个上层预测虚高。</p></div><div class="fc-card"><div class="fc-controls">${select('sim-type', '情景类型', [['forecast', '预测增加 / 减少'], ['quality', '产出损失 / 质量异常'], ['outage', '加工地停工 / 延期']], 'forecast')}</div><div id="sim-form"></div><div class="fc-controls"><label>情景说明<input id="sim-note" placeholder="如上层预测提高20%"></label><button class="btn primary" id="sim-run" ${['admin', 'planner'].includes(user.role) ? '' : 'disabled'}>执行独立推演</button></div><p class="fc-muted" id="sim-assumption"></p><p class="fc-muted" id="sim-prep" role="status" aria-live="polite"></p></div><div id="sim-output"></div></div>`;
+    bindControls(); let edits = pendingSim?.request?.changes?.map(c => ({ code: c.code, month: c.month, operation: c.operation, value: c.value, site_code: c.site_code || '' })) || [{ code: state.code, month: state.month, operation: 'percent', value: 10, site_code: '' }];
     function collect() { if ($('sim-type').value !== 'forecast') return; edits = edits.map((r, i) => ({ code: $('sim-code-' + i).value.trim(), month: $('sim-month-' + i).value, operation: $('sim-op-' + i).value, value: Number($('sim-value-' + i).value), site_code: $('sim-site-' + i).value.trim() })); }
     function form() { const type = $('sim-type').value; if (type === 'forecast') { $('sim-form').innerHTML = table(['编码', '产出月份', '修改方式', '数值', '加工地代码（可空）', '操作'], edits.map((r, i) => [`<input class="fc-input" id="sim-code-${i}" value="${esc(r.code)}">`, `<input class="fc-input" id="sim-month-${i}" type="month" value="${esc(r.month)}">`, `<select class="fc-input" id="sim-op-${i}">${[['percent', '增减百分比'], ['add', '增减数量'], ['set', '设为数量']].map(([k, v]) => opt(k, v, r.operation)).join('')}</select>`, `<input class="fc-input" id="sim-value-${i}" type="number" step="any" value="${r.value}">`, `<input class="fc-input" id="sim-site-${i}" value="${esc(r.site_code)}">`, `<button class="btn danger sm" data-sim-del="${i}">移除</button>`])) + '<button class="btn ghost" id="sim-add" style="margin-top:12px">添加修改项</button>'; $('sim-add').onclick = () => { collect(); edits.push({ code: '', month: state.month, operation: 'percent', value: 0, site_code: '' }); form(); }; document.querySelectorAll('[data-sim-del]').forEach(el => el.onclick = () => { collect(); edits.splice(+el.dataset.simDel, 1); form(); }); $('sim-assumption').textContent = '增减填负数表示减少。未指定加工地时，修改量按该编码当月原加工地数量占比分摊；缺少预测记录时须先导入零数量记录。'; }
       else { $('sim-form').innerHTML = `<div class="fc-sim-grid">${type === 'quality' ? `<label>异常编码<input id="sim-loss-code" value="${esc(state.code)}"></label><label>损失 / 报废数量<input id="sim-scrap" type="number" min="0" value="0"></label>` : `<label>停工加工地<select id="sim-outage-site">${meta.sites.map(s => opt(s.code, s.name, '')).join('')}</select></label>`}<label>延期天数<input id="sim-days" type="number" min="0" max="365" value="7"></label></div>`; $('sim-assumption').textContent = state.source === 'mo' ? '修改所选月份匹配的未完工指令；按计划日期顺延，报废按最早到期指令扣减。' : '月度预测没有日排程，按每日均匀产出估算延期；修改的是产出计划，也会改变其作为使用方的需求。'; }
     }
     form(); $('sim-type').onchange = form;
+    if (pendingSim) { $('sim-note').value = pendingSim.label; pendingSim = null; }
+    // 后台预装推演基线：同版本不重复准备，切换版本/口径后重新准备
+    const prepKey = [meta.revision, state.version, state.month, state.mode, state.source].join('|');
+    if (['admin', 'planner'].includes(user.role) && prepKey !== lastPrepKey) {
+      lastPrepKey = prepKey;
+      $('sim-prep').textContent = '正在准备推演数据，可继续浏览';
+      api('/api/scenarios/prepare', { revision: meta.revision, version: state.version, month: state.month, mode: state.mode, source: state.source })
+        .then(() => { if ($('sim-prep')) $('sim-prep').textContent = '推演已就绪'; })
+        .catch(() => { lastPrepKey = ''; if ($('sim-prep')) $('sim-prep').textContent = '推演准备未完成，执行时将实时计算'; });
+    }
     $('sim-run').onclick = () => { collect(); const type = $('sim-type').value, request = { baseRevision: meta.revision, version: state.version, month: state.month, mode: state.mode, source: state.source, type, note: $('sim-note').value, changes: type === 'forecast' ? edits : undefined, code: $('sim-loss-code')?.value.trim(), scrapQty: Number($('sim-scrap')?.value || 0), delayDays: Number($('sim-days')?.value || 0), site_code: $('sim-outage-site')?.value }; busy('正在复用基线计算独立情景…', async () => { simResult = await api('/api/scenarios', request); renderSimResult(); }); };
     if (simResult) renderSimResult();
   }

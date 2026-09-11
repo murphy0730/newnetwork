@@ -71,6 +71,8 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.ok(await js("window.__testGraph.chainCode===" + JSON.stringify(N0) + " && window.__testGraph.graph.getNodeData().some(n=>window.__testGraph.graph.getElementState(n.id).includes('dim'))"));
   assert.ok(await js("!document.getElementById('ov-root').classList.contains('d-off')")); checks.push('single click locks chain and opens insight without drilling');
   assert.ok(await js("!!document.querySelector('#detail-body .dt-hero') && !!document.querySelector('#detail-body .dt-metrics') && !!document.querySelector('#detail-body .dt-block')")); checks.push('insight panel uses dt-* card structure');
+  await wait(() => js("document.getElementById('insight-body')?.innerText.includes('业务洞察')"), 'insight render');
+  assert.ok(await js("!!document.querySelector('#insight-body .ins-card .ins-headline') && !!document.querySelector('#insight-body .ins-status') && document.getElementById('insight-body').innerText.includes('规则生成')")); checks.push('insight card renders status headline and generator label');
 
   // 5. 双击：下钻到编码链路并显示洞察
   await js("window.__testGraph.graph.emit('node:dblclick',{target:{id:" + JSON.stringify(N0) + "}})");
@@ -112,6 +114,11 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await js("document.querySelector('#seg-mode [data-mode=\"direct\"]').click()");
   await wait(() => js("document.querySelector('#seg-mode [data-mode=\"direct\"]').classList.contains('active') && !!document.querySelector('#graph-container canvas') && !!window.__testGraph.nodes.length"), 'mode switch');
   assert.ok(await js("!document.getElementById('sc-mode')")); checks.push('mode segment in toolbar switches relation scope');
+
+  // 12. 推演页后台准备状态
+  await click('[data-tab="simulate"]');
+  await wait(() => js("!!document.getElementById('sim-prep') && document.getElementById('sim-prep').textContent.length>0"), 'sim prep status');
+  await wait(() => js("document.getElementById('sim-prep').textContent==='推演已就绪'"), 'sim ready', 120000); checks.push('scenario prepare reaches ready state');
 
   const shot = await cdp('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, 'ui-overview.png'), Buffer.from(shot.data, 'base64'));
   assert.deepEqual(errors, []); fs.writeFileSync(path.join(out, 'ui-browser.json'), JSON.stringify({ checks, errors }, null, 2)); console.log(JSON.stringify({ checks, errors }, null, 2));
