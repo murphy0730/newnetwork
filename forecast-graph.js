@@ -3,6 +3,45 @@
  * clustering, coloring, path highlighting and node selection. */
 (function (root) {
   'use strict';
+  // Pure O(V log V + E) positioning; no category-to-row mapping or depth clamp.
+  function layered(nodes, edges, width, height, group = () => '') {
+    const bands = new Map(), parents = new Map(), positions = new Map(), ranks = new Map();
+    for (const n of nodes) { const level = Math.max(0, Number(n.level) || 0); ranks.set(n.code, level); if (!bands.has(level)) bands.set(level, []); bands.get(level).push(n); }
+    for (const e of edges) { if (!parents.has(e.target)) parents.set(e.target, []); parents.get(e.target).push(e.source); }
+    const levels = [...bands.keys()].sort((a, b) => a - b);
+    const aspect = Math.max(0.3, (width || 1000) / Math.max(160, height || 700));
+    const gap = 66, cellX = 84, cellY = 48;
+    const totalHeight = columns => levels.reduce((h, l) => h + Math.max(1, Math.ceil(bands.get(l).length / columns)) * cellY + gap, 0);
+    let lo = 1, hi = Math.max(1, nodes.length);
+    while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (mid * cellX / Math.max(1, totalHeight(mid)) < aspect) lo = mid + 1; else hi = mid; }
+    const columns = lo, virtualWidth = Math.max(cellX, columns * cellX), virtualHeight = Math.max(cellY, totalHeight(columns));
+    let y = 0; const regions = [];
+    for (const level of levels) {
+      const members = bands.get(level), scores = new Map();
+      for (const n of members) {
+        let sum = 0, count = 0;
+        for (const p of parents.get(n.code) || []) if (positions.has(p)) { sum += positions.get(p)[0]; count++; }
+        scores.set(n.code, count ? sum / count : virtualWidth / 2);
+      }
+      members.sort((a, b) => String(group(a) || '').localeCompare(String(group(b) || '')) || scores.get(a.code) - scores.get(b.code) || a.code.localeCompare(b.code));
+      const rows = Math.ceil(members.length / columns), bandHeight = rows * cellY;
+      for (let row = 0; row < rows; row++) {
+        const count = Math.min(columns, members.length - row * columns), spacing = virtualWidth / Math.max(1, count);
+        for (let col = 0; col < count; col++) {
+          const n = members[row * columns + col];
+          const x = count === 1 ? virtualWidth / 2 : (col + 0.5 + (row % 2 ? 0.14 : -0.14)) * spacing;
+          const stagger = count > 1 ? ((col % 3) - 1) * 7 : 0;
+          positions.set(n.code, [x, y + cellY / 2 + row * cellY + stagger]);
+        }
+      }
+      regions.push({ level, top: y - 8, bottom: y + bandHeight + 8, count: members.length });
+      y += bandHeight + gap;
+    }
+    return { positions, regions, width: virtualWidth, height: virtualHeight, ranks };
+  }
+  // Keep layout and renderer in one browser asset, including during server upgrades.
+  if (typeof module === 'object' && module.exports) { module.exports = { layered }; return; }
+  root.ForecastLayout = { layered };
   const G6 = root.G6;
   if (!G6) { console.error('G6 未加载'); return; }
 
@@ -132,7 +171,12 @@
       this.graph.on('combo:dragend', dragEnd);
       // 容器尺寸变化（如右侧面板展开/收起）时同步画布与凸包，避免边界遮挡
       if (typeof ResizeObserver !== 'undefined') {
-        this._resizeObserver = new ResizeObserver(() => { if (this.graph) { this.graph.resize(); this._scheduleHulls(); } });
+        this._resizeObserver = new ResizeObserver(() => { if (this.graph) { this.graph.resize(); this._scheduleHulls();
+          const size = this.el.clientWidth + ':' + this.el.clientHeight;
+          if (size !== this._lastSize) {
+            this._lastSize = size; clearTimeout(this._resizeTimer);
+            if (this.nodes.length && this._usePreset()) this._resizeTimer = setTimeout(() => this.render().catch(error => console.error(error)), 120);
+          } } });
         this._resizeObserver.observe(this.el);
       }
       this.graph.on('node:click', (evt) => {
@@ -173,7 +217,7 @@
       this.ready = true;
     }
 
-    _node(id) { for (const n of this.nodes) if (n.code === id) return n; return null; }
+    _node(id) { return this._nodeMap?.get(id) || null; }
 
     _nodeStyle(n) {
       let fill;
@@ -226,17 +270,33 @@
       const svg = this.hullLayer;
       if (!svg) return;
       while (svg.firstChild) svg.removeChild(svg.firstChild);
-      if (this.cluster === 'none' || !this.graph || !this.nodes.length) return;
+      if (!this.graph || !this.nodes.length) return;
       const rect = this.el.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       svg.setAttribute('width', rect.width); svg.setAttribute('height', rect.height);
+      if (this._usePreset() && this._regions) for (const band of this._regions) {
+        const top = this.graph.getClientByCanvas([0, band.top])[1] - rect.top;
+        const bottom = this.graph.getClientByCanvas([0, band.bottom])[1] - rect.top;
+        if (bottom < 0 || top > rect.height) continue;
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', 8); text.setAttribute('y', Math.max(15, top + 12));
+        text.setAttribute('fill', '#849bbd'); text.setAttribute('font-size', '10');
+        text.setAttribute('data-bom-level', band.level);
+        text.textContent = 'BOM 第' + (band.level + 1) + '层 · ' + band.count;
+        svg.appendChild(text);
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        for (const [k, v] of Object.entries({ x1: 6, x2: rect.width - 6, y1: bottom + 8, y2: bottom + 8, stroke: '#38527b', 'stroke-opacity': 0.35, 'stroke-dasharray': '3 7' })) line.setAttribute(k, v);
+        svg.appendChild(line);
+      }
+      if (this.cluster === 'none') return;
       const groups = new Map();
       for (const n of this.nodes) for (const key of this._clusterKeys(n)) {
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(n);
+        const bucket = this._usePreset() ? JSON.stringify([key, n.level]) : key;
+        if (!groups.has(bucket)) groups.set(bucket, { key, members: [] });
+        groups.get(bucket).members.push(n);
       }
       const NS = 'http://www.w3.org/2000/svg', PAD = 26;
-      for (const [key, members] of groups) {
+      for (const { key, members } of groups.values()) {
         const pts = [];
         for (const n of members) {
           try {
@@ -259,7 +319,7 @@
         let site = null;
         if (this.cluster === 'site') for (const n of members) { site = (n.sites || []).find(s => (s.key || s.name) === key) || null; if (site) break; }
         const label = (site ? `${site.name || site.key}${site.code && site.name !== site.code ? ' (' + site.code + ')' : ''}` : String(key)) + ' · ' + members.length;
-        const minY = Math.min(...pts.map(p => p[1])), cx = (Math.min(...pts.map(p => p[0])) + Math.max(...pts.map(p => p[0]))) / 2;
+        let minY = Infinity, minX = Infinity, maxX = -Infinity; for (const [x, y] of pts) { minY = Math.min(minY, y); minX = Math.min(minX, x); maxX = Math.max(maxX, x); } const cx = (minX + maxX) / 2;
         const w = label.length * 7 + 14, lx = Math.max(4, Math.min(rect.width - w - 4, cx - w / 2)), ly = Math.max(2, minY - PAD - 24);
         const bg = document.createElementNS(NS, 'rect');
         bg.setAttribute('x', lx); bg.setAttribute('y', ly); bg.setAttribute('width', w); bg.setAttribute('height', 18); bg.setAttribute('rx', 4);
@@ -308,30 +368,13 @@
       return { nodes, edges, combos };
     }
 
-    // 分层纵向间距自适应：宽度受限时 autoFit 会按"最宽一层"缩小画布，静态 ranksep 在屏幕上被压扁。
-    // 按最宽层估算缩放比（节点+标签约100px宽），反推让层级带在屏幕上占满约70%视口高度的 ranksep
-    _adaptiveRanksep() {
-      const counts = {};
-      let max = 1;
-      for (const n of this.nodes) { const l = Math.min(8, n.level || 0); counts[l] = (counts[l] || 0) + 1; if (counts[l] > max) max = counts[l]; }
-      const zoom = Math.max(1, (max * 100) / (this.el.clientWidth || 1000));
-      const levels = Math.max(1, Object.keys(counts).length - 1);
-      return Math.round(Math.min(600, Math.max(130, (0.7 * (this.el.clientHeight || 700) * zoom) / levels)));
-    }
-
-    // 分层布局的降级策略：无聚类且节点超过阈值时 dagre 耗时不可接受，按 BOM 层级直接计算行位置（preset）
-    _usePreset() { return this.layoutMode === 'layered' && this.cluster === 'none' && this.nodes.length > (this.presetThreshold || 300); }
+    _usePreset() { return this.layoutMode === 'layered' || this.nodes.length > 800; }
 
     _presetPos(n) {
       if (!this._presetMap) {
-        this._presetMap = new Map();
-        const byLevel = new Map();
-        for (const node of this.nodes) { const l = Math.min(8, node.level || 0); if (!byLevel.has(l)) byLevel.set(l, []); byLevel.get(l).push(node.code); }
-        const perRow = 36; let y = 0;
-        for (const [l, codes] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
-          codes.forEach((c, i) => this._presetMap.set(c, [(i % perRow) * 52, y + Math.floor(i / perRow) * 56]));
-          y += Math.ceil(codes.length / perRow) * 56 + 120;
-        }
+        const rect = this.el.getBoundingClientRect();
+        const plan = layered(this.nodes, this.edges, Math.max(200, rect.width - 72), Math.max(160, rect.height - 110), node => this._clusterKey(node));
+        this._presetMap = plan.positions; this._regions = plan.regions;
       }
       return this._presetMap.get(n.code) || [0, 0];
     }
@@ -347,19 +390,13 @@
     // 节点的完整链路：沿边方向的上游闭包 + 下游闭包
     _chain(id) {
       const nodes = new Set([id]), edges = new Set();
-      const walk = (forward) => {
-        const queue = [id];
-        while (queue.length) {
-          const c = queue.pop();
-          this.edges.forEach((e, i) => {
-            if ((forward ? e.source : e.target) !== c || edges.has('__e' + i)) return;
-            edges.add('__e' + i);
-            const next = forward ? e.target : e.source;
-            if (!nodes.has(next)) { nodes.add(next); queue.push(next); }
-          });
+      for (const adjacency of [this._outEdges, this._inEdges]) {
+        const seen = new Set([id]), queue = [id];
+        for (let j = 0; j < queue.length; j++) for (const item of adjacency.get(queue[j]) || []) {
+          edges.add('__e' + item.i); nodes.add(item.next);
+          if (!seen.has(item.next)) { seen.add(item.next); queue.push(item.next); }
         }
-      };
-      walk(true); walk(false);
+      }
       return { nodes, edges };
     }
 
@@ -404,6 +441,13 @@
       if (opts.criticalPath !== undefined) this.criticalPath = opts.criticalPath;
       this.nodes = nodes || [];
       this.edges = edges || [];
+      this._nodeMap = new Map(this.nodes.map(n => [n.code, n]));
+      this._outEdges = new Map(); this._inEdges = new Map();
+      this.edges.forEach((e, i) => {
+        for (const [map, key, next] of [[this._outEdges, e.source, e.target], [this._inEdges, e.target, e.source]]) {
+          if (!map.has(key)) map.set(key, []); map.get(key).push({ i, next });
+        }
+      });
       this.chainCode = '';
       this._hover = null;
       this._presetMap = null;
@@ -414,18 +458,17 @@
       const revision = ++this._renderRevision;
       this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
         if (!this.graph || revision !== this._renderRevision) return;
-        const layered = { type: 'dagre', rankdir: 'TB', nodesep: 40, ranksep: this._adaptiveRanksep() };
-        const preset = this._usePreset(); // 节点多时 dagre 不可用，按 BOM 层级预计算列位置
-        const layout = this.cluster === 'none'
-          ? preset ? { type: 'preset' } : this.layoutMode === 'layered' ? layered : { type: 'force' }
+        this._presetMap = null;
+        const preset = this._usePreset();
+        const layout = preset ? { type: 'preset' } : this.cluster === 'none' ? { type: 'force' }
           : { type: 'combo-combined', comboPadding: 36, comboSpacing: 60, nodeSize: 50, nodeSpacing: 20,
-              layout: comboId => comboId ? this.layoutMode === 'layered' ? { type: 'dagre', rankdir: 'TB', nodesep: 40, ranksep: this._adaptiveRanksep() } : { type: 'concentric', preventOverlap: true } : preset ? { type: 'preset' } : this.layoutMode === 'layered' ? { type: 'force', preventOverlap: true } : { type: 'force', preventOverlap: true } };
+              layout: comboId => comboId ? { type: 'concentric', preventOverlap: true } : { type: 'force', preventOverlap: true } };
         this.graph.setLayout(layout);
         this.graph.setData(this._buildData());
         await this.graph.render();
         if (this.graph && revision === this._renderRevision) {
-          // 分层（纵向）视图：按宽度适配，允许垂直/水平拖拽查看，避免横向压缩把行距压扁
-          if (this.layoutMode === 'layered') await this.graph.fitView({ direction: 'x', when: 'overflow' }).catch(() => this.graph.fitView());
+          // The layout's aspect ratio matches the viewport; fit both axes.
+          if (preset) await this.graph.fitView();
           await this._applyStates();
         }
       });
@@ -434,15 +477,25 @@
 
     setLayout(mode) { if (mode === this.layoutMode) return Promise.resolve(); this.layoutMode = mode; return this.render(); }
     setCluster(c) { this.cluster = c; return this.render(); }
-    setColorBy(c) { this.colorBy = c; return this.render(); }
-    setHighlight(kind) { this.highlight = kind; return this.render(); }
-    setEdgeOpacity(v) { this.edgeOpacity = Math.min(1, Math.max(0.05, Number(v) || 0.8)); return this.render(); }
-    setShowRatio(v) { this.showRatio = !!v; return this.render(); }
+    restyle(nodes = false, states = false) {
+      this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
+        if (!this.graph) return;
+        if (nodes) this.graph.updateNodeData(this.nodes.map(n => ({ id: n.code, style: this._nodeStyle(n) })));
+        else this.graph.updateEdgeData(this.edges.map((e, i) => ({ id: '__e' + i, style: { ...this._edgeStyle(e), labelText: this.showRatio && e.qty != null ? '×' + (Math.round(e.qty * 100) / 100) : '' } })));
+        await this.graph.draw();
+        if (this.graph && states) await this._applyStates();
+      });
+      return this._renderQueue;
+    }
+    setColorBy(c) { this.colorBy = c; return this.restyle(true); }
+    setHighlight(kind) { this.highlight = kind; return this.restyle(false, true); }
+    setEdgeOpacity(v) { this.edgeOpacity = Math.min(1, Math.max(0.05, Number(v) || 0.8)); return this.restyle(); }
+    setShowRatio(v) { this.showRatio = !!v; return this.restyle(); }
     select(code) { this.selected = code; return this.render(); }
     fit() { this.graph.fitView(); }
     zoomIn() { this.graph.zoomBy(1.25); }
     zoomOut() { this.graph.zoomBy(0.8); }
-    destroy() { this._renderRevision++; this._dragging = false; if (this._resizeObserver) { this._resizeObserver.disconnect(); this._resizeObserver = null; } if (this._hullRaf) { cancelAnimationFrame(this._hullRaf); this._hullRaf = 0; } if (this.hullLayer) { this.hullLayer.remove(); this.hullLayer = null; } if (this.graph) { this.graph.destroy(); this.graph = null; } }
+    destroy() { clearTimeout(this._resizeTimer); this._renderRevision++; this._dragging = false; if (this._resizeObserver) { this._resizeObserver.disconnect(); this._resizeObserver = null; } if (this._hullRaf) { cancelAnimationFrame(this._hullRaf); this._hullRaf = 0; } if (this.hullLayer) { this.hullLayer.remove(); this.hullLayer = null; } if (this.graph) { this.graph.destroy(); this.graph = null; } }
   }
 
   root.ForecastGraph = ForecastGraph;

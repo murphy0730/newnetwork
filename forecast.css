@@ -9,6 +9,19 @@
 .gs-range-val{font-family:var(--font-num);font-size:11px;color:var(--ink-2);min-width:34px;text-align:right}
 /* 凸包聚类边框 overlay 需要容器定位 */
 #graph-container{position:relative}
+.fc-picker{border:1px solid #38527b;border-radius:7px;background:#0a1324;padding:8px}
+.fc-picker summary{cursor:pointer;color:var(--ink);min-height:24px;line-height:24px}
+.fc-picker fieldset{border:0;padding:0;margin:8px 0;max-height:220px;overflow:auto}
+.fc-choice{display:flex!important;align-items:center;gap:9px;padding:7px 4px;cursor:pointer;min-height:36px}
+.fc-choice[hidden]{display:none!important}
+.f-group .fc-choice input{width:16px;min-width:16px;height:16px;padding:0;accent-color:#67a7f5}
+.fc-choice span{min-width:0;color:var(--ink);overflow-wrap:anywhere;font-size:12px}
+.fc-choice small{display:block;color:var(--ink-3);font-size:11px;margin-top:3px}
+.fc-code-options{max-height:240px;overflow:auto;background:#0a1324;border-radius:6px;margin-top:6px}
+.fc-code-options:empty{display:none}
+.fc-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+.fc-chip{border:1px solid #456286;border-radius:6px;background:#183252;color:#d8e7ff;padding:5px 7px;cursor:pointer;overflow-wrap:anywhere;max-width:100%;text-align:left}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 /* 业务洞察卡片 */
 .ins-card{margin:14px 18px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2,#101b31)}
 .ins-card.is-risk{border-color:#a74764}
