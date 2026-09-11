@@ -6,7 +6,9 @@ const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..'), out = path.join(root, 'test-output'); fs.mkdirSync(out, { recursive: true });
 const suffix = Date.now(), appPort = Number(process.env.TEST_PORT || 8794), debugPort = Number(process.env.DEBUG_PORT || 9336);
 const chromePath = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const env = { ...process.env, PORT: String(appPort), HOST: '127.0.0.1', DB_PATH: path.join(out, `ui-${suffix}.sqlite`), API_ADMIN_TOKEN: '', API_PLANNER_TOKEN: '', API_VIEWER_TOKEN: '' };
+const env = { ...process.env, PORT: String(appPort), HOST: '127.0.0.1', DB_PATH: path.join(out, `ui-${suffix}.sqlite`), IMPORT_DIR: path.join(out, `ui-import-${suffix}`), API_ADMIN_TOKEN: '', API_PLANNER_TOKEN: '', API_VIEWER_TOKEN: '' };
+fs.mkdirSync(path.join(out, `ui-import-${suffix}`), { recursive: true });
+fs.writeFileSync(path.join(out, `ui-import-${suffix}`, 'folder-test.csv'), '计划日期,编码,预测月份,预测数量,加工地代码\n2026-11-10,FG-01,2026-11,300,S001\n');
 const app = spawn(process.execPath, ['server/main.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = ''; app.stdout.on('data', b => logs += b); app.stderr.on('data', b => logs += b);
 let chrome, ws, nextId = 1; const pending = new Map(), errors = [], checks = [];
@@ -58,6 +60,37 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await click('.kpi[data-key="coverageShortage"]');
   await wait(() => js("window.__graphRev>"+revC+" && !document.querySelector('.kpi.active') && window.__testGraph.nodes.length==="+total), 'kpi filter cleared'); checks.push('clicking active kpi card clears filter');
 
+  // 2b. 维度筛选即选即刷新，且带一跳链路上下文（不再只见孤立节点）
+  const kpiBefore = await js("document.querySelector('.kpi[data-key=total] .num').textContent");
+  const revD = await js('window.__graphRev');
+  await js("const boxes=[...document.querySelectorAll('#sc-site input')];boxes[0].click();boxes[1].click();document.getElementById('apply').click()");
+  await wait(() => js("window.__graphRev>"+revD+" && window.__testGraph.nodes.length>0 && window.__testGraph.nodes.length<"+total), 'multi-site filter apply');
+  assert.ok(await js("window.__testGraph.edges.length>0")); checks.push('two sites apply together with chain context');
+  const kpiAfter = await js("document.querySelector('.kpi[data-key=total] .num').textContent");
+  assert.ok(kpiAfter !== kpiBefore && Number(kpiAfter.replace(/[^\d]/g, '')) < Number(kpiBefore.replace(/[^\d]/g, ''))); checks.push('kpi strip follows dimension filters');
+  assert.ok(await js("!!document.getElementById('sc-industry') && !!document.getElementById('sc-category') && document.getElementById('sc-category').options.length>1")); checks.push('industry and category filter selects present');
+  const revE = await js('window.__graphRev');
+  await js("document.getElementById('clear').click()");
+  await wait(() => js("window.__graphRev>"+revE+" && window.__testGraph.nodes.length==="+total), 'clear filters'); checks.push('clear restores full graph');
+
+  // Multi-code search: choose exact codes, remove chips, retain selections across refresh.
+  await js("const input=document.getElementById('sc-search');input.value=window.__testGraph.nodes[0].code.slice(0,2);input.dispatchEvent(new Event('input',{bubbles:true}))");
+  await wait(() => js("document.querySelectorAll('#code-options input').length>=2"), 'code candidates');
+  const picked = await js("(()=>{const boxes=[...document.querySelectorAll('#code-options input')].slice(0,2);boxes.forEach(b=>b.click());return boxes.map(b=>b.value)})()");
+  assert.equal(await js("document.querySelectorAll('#code-chips button').length"),2);
+  await click('#apply');
+  await wait(() => js("window.__testGraph.nodes.filter(n=>n.matched).length===2 && document.querySelectorAll('#code-chips button').length===2"), 'two exact codes');
+  assert.deepEqual((await js("window.__testGraph.nodes.filter(n=>n.matched).map(n=>n.code).sort()")), picked.sort());
+  checks.push('code/name candidates support exact multi-selection with persistent chips');
+  await click('#clear');
+  await wait(() => js('window.__testGraph.nodes.length==='+total), 'restore after code filter');
+  await js('window.__testGraph._renderQueue');
+  const bands = await js("(()=>{const g=window.__testGraph;const pos=new Map(g.nodes.map(n=>[n.code,g.graph.getElementPosition(n.code)]));return {levels:new Set(g.nodes.map(n=>n.level)).size,regions:g._regions.length,ordered:g.edges.every(e=>pos.get(e.source)[1]<pos.get(e.target)[1]),count:g.graph.getNodeData().length};})()");
+  assert.equal(bands.regions,bands.levels); assert.equal(bands.ordered,true); assert.equal(bands.count,total);
+  checks.push('complete graph uses actual BOM bands with every parent above its child');
+  await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+  const screenshot = await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'network-layered.png'),Buffer.from(screenshot.data,'base64'));
+
   // 3. 悬浮高亮相邻链路
   await js("window.__testGraph.graph.emit('node:pointerenter',{target:{id:" + JSON.stringify(N0) + "}})");
   assert.ok(await js("window.__testGraph.graph.getNodeData().some(n=>window.__testGraph.graph.getElementState(n.id).includes('dim'))")); checks.push('hover dims non-adjacent nodes');
@@ -92,6 +125,7 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   const multi = await js("(()=>{const g=window.__testGraph;const n=g.nodes.find(x=>(x.sites||[]).length>1);if(!n)return null;const paths=[...document.querySelectorAll('#graph-container .cluster-hull-layer path[data-cluster]')].filter(p=>(p.getAttribute('data-members')||'').split(',').includes(n.code));return {code:n.code,sites:n.sites.length,groups:paths.length};})()");
   assert.ok(multi && multi.sites > 1 && multi.groups >= 2); checks.push('multi-site code ' + multi.code + ' in ' + multi.groups + ' site hulls');
 
+  assert.ok(await js("(()=>{const g=window.__testGraph;return g.edges.every(e=>g.graph.getElementPosition(e.source)[1]<g.graph.getElementPosition(e.target)[1]);})()")); checks.push('site clustering preserves BOM parent-before-child order');
   // 8. 缩放后凸包跟随视口
   const hullBefore = await js("document.querySelector('#graph-container .cluster-hull-layer path').getAttribute('d')");
   await js('window.__testGraph.zoomIn()'); await sleep(500);
@@ -119,6 +153,14 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await click('[data-tab="simulate"]');
   await wait(() => js("!!document.getElementById('sim-prep') && document.getElementById('sim-prep').textContent.length>0"), 'sim prep status');
   await wait(() => js("document.getElementById('sim-prep').textContent==='推演已就绪'"), 'sim ready', 120000); checks.push('scenario prepare reaches ready state');
+
+  // 13. import 文件夹一键导入
+  await click('[data-tab="data"]');
+  await wait(() => js("document.getElementById('folder-files')?.textContent.includes('folder-test.csv')"), 'folder scan');
+  await click('#import-folder');
+  await wait(() => js("!document.body.hasAttribute('aria-busy') && !!document.querySelector('.import-grid')"), 'folder import', 180000);
+  await click('[data-tab="overview"]');
+  await wait(() => js("!!window.__testGraph?.nodes.length && !!document.querySelector('#graph-container canvas')"), 'overview after import'); checks.push('folder one-click import and republish');
 
   const shot = await cdp('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, 'ui-overview.png'), Buffer.from(shot.data, 'base64'));
   assert.deepEqual(errors, []); fs.writeFileSync(path.join(out, 'ui-browser.json'), JSON.stringify({ checks, errors }, null, 2)); console.log(JSON.stringify({ checks, errors }, null, 2));

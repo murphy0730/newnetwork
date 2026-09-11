@@ -363,8 +363,8 @@
     const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
     const code = (p, n) => p + '-' + String(n).padStart(2, '0');
     const gIndex = (c) => Number(c.split('-')[1]);
-    // 7 层 BOM：整机→模组→部件→结构件→基础料→深基础料→原料；外购件为跨产业叶子。完整规模共10000编码
-    const GRP0 = { FG: 200, MD: 700, PT: 1200, SB: 1600, RW: 2000, BS: 2000, RM: 1400, EX: 900 };
+    // 7 层 BOM：整机→模组→部件→结构件→基础料→深基础料→原料；外购件为跨产业叶子。完整规模共5000编码
+    const GRP0 = { FG: 100, MD: 350, PT: 600, SB: 800, RW: 1000, BS: 1000, RM: 700, EX: 450 };
     const GRP = Object.fromEntries(Object.entries(GRP0).map(([g, n]) => [g, Math.max(2, Math.round(n * scale))]));
     const LEVEL = ['FG', 'MD', 'PT', 'SB', 'RW', 'BS', 'RM']; // 逐层父子
     // 12 个本产业制造部门（同一大类按编码奇偶分到两个部门）＋3 个跨产业外协厂

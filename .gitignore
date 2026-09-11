@@ -18,7 +18,10 @@ tests/*
 *.log
 
 # 离线构建输入与运行产物
-imports/
+# import/ 是 /api/import/folder 一键导入的默认目录（可用 IMPORT_DIR 覆盖），
+# 只保留说明文件，放入的表格属业务数据不入库
+import/*
+!import/*.txt
 build-output/
 *.supply
 *.supply.partial*
