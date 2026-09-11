@@ -1,27 +1,20 @@
 @echo off
-rem ======================================================================
-rem  启动供应网络控制塔服务（对应 end.cmd）
-rem
-rem  用法：
-rem    start.cmd           -> 端口 8787
-rem    start.cmd 9000      -> 端口 9000（停止时也要用 end.cmd 9000）
-rem
-rem  维护注意：本文件必须以 CRLF 换行保存（.gitattributes 已强制 *.cmd eol=crlf）
-rem ======================================================================
-setlocal
-cd /d "%~dp0"
+setlocal DisableDelayedExpansion
 chcp 65001 >nul 2>&1
+cd /d "%~dp0"
+rem Keep this file UTF-8 without BOM, with CRLF line endings.
+rem Usage: start.cmd [port], default 8787. Stop with end.cmd [port].
 
-set "PORT=%~1"
-if not defined PORT set "PORT=8787"
+where node >nul 2>&1
+if errorlevel 1 goto missing_node
 
-rem --- 启动前先查端口, 避免 node 抛 EADDRINUSE 后窗口一闪而过 ---
-netstat -ano | findstr /R /C:":%PORT% .*LISTENING" >nul
-if errorlevel 1 (echo [start] 启动控制塔: http://127.0.0.1:%PORT%/) else (echo [start] 端口 %PORT% 已被占用, 请先执行 end.cmd %PORT%)
-if not errorlevel 1 (pause & exit /b 1)
+node server/start.js "%~1"
+set "TOWER_START_EXIT=%errorlevel%"
+if not "%TOWER_START_EXIT%"=="0" echo [start] 启动失败，请查看上方错误信息。
+if not defined TOWER_NO_PAUSE pause
+exit /b %TOWER_START_EXIT%
 
-rem --- 把端口透传给 node（server/main.js 读取 process.env.PORT）---
-set PORT=%PORT%
-node server/main.js
-
-pause
+:missing_node
+echo [start] 未找到 Node.js。请安装 Node.js 24 或更高版本，再重新打开本窗口。
+if not defined TOWER_NO_PAUSE pause
+exit /b 1
