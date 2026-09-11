@@ -4,6 +4,7 @@ const Store = require('./store');
 const Importer = require('./importer');
 const C = require('../forecast-core');
 const Engine = require('./engine');
+const Query = require('./query-index');
 const error = (message, status = 400, details) => Object.assign(Error(message), { status, details });
 const int = (x, fallback, min, max) => { if (x == null || x === '') return fallback; const n = Number(x); if (!Number.isInteger(n) || n < min || n > max) throw error(`整数参数超出范围${min}~${max}`); return n; };
 function checkConfig(cfg) {
@@ -11,15 +12,18 @@ function checkConfig(cfg) {
   if (!(Number.isFinite(cfg.cv_threshold) && cfg.cv_threshold >= 0 && cfg.cv_threshold <= 10)) throw error('CV阈值应为0~10');
   if (!(Number.isFinite(cfg.concentration) && cfg.concentration > 0 && cfg.concentration <= 1)) throw error('集中度阈值应为0~1');
 }
-function changesFor(base, body, version) {
+function changesFor(base, body, version, trusted = false) {
   const next = { ...base, tables: { ...base.tables } }, changes = body.changes || [], seen = new Set();
   if (!Array.isArray(changes) || changes.length > 1000) throw error('每个推演最多1000项修改');
   if ((body.type || 'forecast') === 'forecast') {
     if (!changes.length) throw error('请提供至少一项预测修改');
-    const rows = base.tables.forecast.slice(), index = new Map(), versionCodes = new Set();
+    const rows = base.tables.forecast.slice(), index = new Map(), versionCodes = new Set(), requested = new Map();
+    for (const c of changes) { if (!c || typeof c !== 'object') throw error('推演修改项无效'); const code = String(c.code || ''), month = C.date(c.month, true); if (!requested.has(code)) requested.set(code, new Set()); requested.get(code).add(month); }
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]; if (r.plan_date !== version) continue;
-      versionCodes.add(r.code); const k = JSON.stringify([r.code, r.month]);
+      if (!requested.has(r.code)) continue;
+      versionCodes.add(r.code); if (!requested.get(r.code).has(r.month)) continue;
+      const k = JSON.stringify([r.code, r.month]);
       if (!index.has(k)) index.set(k, []); index.get(k).push(i);
     }
     for (const change of changes) {
@@ -36,7 +40,7 @@ function changesFor(base, body, version) {
       else if (change.operation === 'percent') target = total * (1 + value / 100);
       else throw error('推演操作须为set/add/percent');
       if (!Number.isFinite(target) || target < 0) throw error('修改后预测数量不能小于0或溢出');
-      for (const i of matches) rows[i] = { ...rows[i], qty: total > 0 ? rows[i].qty * target / total : target / matches.length };
+      for (const i of matches) rows[i] = { ...rows[i], qty: total > 0 ? (rows[i].qty / total) * target : target / matches.length };
     }
     next.tables.forecast = rows;
   } else if (['quality', 'outage'].includes(body.type)) {
@@ -68,7 +72,16 @@ function changesFor(base, body, version) {
       next.tables.forecast = rows;
     }
   } else throw error('未知推演类型');
-  const validation = C.validate(next); if (validation.errors.length) throw error('推演数据校验失败', 422, validation.errors.slice(0, 100));
+  // Only quantities/dates change on a validated immutable baseline. Rebuilding
+  // the entire BOM for each what-if cannot discover a new structural error.
+  if (trusted) {
+    if (base.config.input_mode === 'raw') {
+      const uses = new Map(), totals = new Map();
+      for (const r of base.tables.adjust) if (r.direction === '使用') { const key = JSON.stringify([r.code, r.month]); uses.set(key, (uses.get(key) || 0) + r.qty); }
+      for (const r of next.tables.forecast) if (r.plan_date === version) { const key = JSON.stringify([r.code, r.month]); if (uses.has(key)) totals.set(key, (totals.get(key) || 0) + r.qty); }
+      for (const [key, qty] of totals) if (uses.get(key) > qty + C.EPS) throw error('推演后的预测小于使用剔除量，请检查原始预测预处理口径', 422);
+    }
+  } else { const validation = C.validate(next); if (validation.errors.length) throw error('推演数据校验失败', 422, validation.errors.slice(0, 100)); }
   return next;
 }
 class Service {
@@ -88,6 +101,7 @@ class Service {
     const scenario = q.scenario ? this.store.scenario(q.scenario, actor) : null;
     const revision = scenario ? scenario.revision : q.revision == null || q.revision === '' ? this.store.revision() : int(q.revision, 0, 0, 1e9);
     let version = scenario ? scenario.request.version : q.version;
+    version ||= this.store.artifact(revision)?.manifest.versions.at(-1);
     const existing = this.engines.get(JSON.stringify([revision, version, q.scenario || '']));
     if (existing) return existing;
     let snap = this.state(revision);
@@ -95,7 +109,7 @@ class Service {
     const key = JSON.stringify([snap.revision, version, q.scenario || '']);
     if (!this.engines.has(key)) {
       const baseline = scenario ? this.engine({ revision, version }, actor) : null;
-      if (scenario) snap = changesFor(snap, scenario.request, version);
+      if (scenario) snap = changesFor(snap, scenario.request, version, true);
       if (version && !snap.tables.forecast.some(r => r.plan_date === version)) throw error('预测版本不存在', 404);
       const artifact = !scenario ? this.store.artifact(revision) : null;
       if (!scenario && version && !artifact) throw error('当前数据缺少离线构建产物，请从数据管理启动重建', 503);
@@ -124,11 +138,13 @@ class Service {
     return touched;
   }
   context(q, actor) {
+    if (q.role && !['supply', 'demand'].includes(q.role)) throw error('观察角色无效');
+    if (q.risk && !['shortage', 'coverage', 'single', 'concentrated', 'incomplete', 'all'].includes(q.risk)) throw error('风险筛选无效');
     const engine = this.engine(q, actor), month = q.month || engine.months[0], mode = q.mode || 'cross', source = q.source || 'forecast';
     if (!['direct', 'cross', 'top'].includes(mode) || !['forecast', 'mo'].includes(source)) throw error('分析口径无效');
     if (month) C.date(month, true);
     if (month && !engine.months.includes(month)) throw error('月份不在该预测版本内');
-    return { engine, month, mode, source, trace: { revision: engine.snapshot.revision, version: engine.version || null, month: month || null, mode, source, scenario: q.scenario || null, input_mode: engine.cfg.input_mode, calculated_at: new Date().toISOString() } };
+    return { engine, month, mode, source, trace: { revision: engine.snapshot.revision, buildId: this.store.artifact(engine.snapshot.revision)?.manifest.buildId || null, version: engine.version || null, month: month || null, mode, source, scenario: q.scenario || null, input_mode: engine.cfg.input_mode, calculated_at: new Date().toISOString() } };
   }
   publish(next, expected, actor, action, prepared) {
     this.store.save(next, expected, actor, action, prepared); this.cached = null; this.engines.clear();
@@ -142,27 +158,31 @@ class Service {
   }
   list(q, actor) {
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [] };
-    const all = [...engine.compute(month, mode, source).values()];
-    const dashboard = { total: all.length, shortage: all.filter(r => r.gap > C.EPS).length, coverageShortage: all.filter(r => r.coverageGap > C.EPS).length, single: all.filter(r => r.sites.single).length, concentrated: all.filter(r => r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration).length, incomplete: all.filter(r => !r.complete).length, unknownSites: all.filter(r => r.sites.unassigned > C.EPS).length };
-    const search = String(q.search || '').toLowerCase();
-    let rows = q.role === 'demand' && q.code ? engine.downstream(q.code, month, mode).map(r => ({ ...engine.compute(month, mode, source).get(r.code), contribution: r.contribution, coeff: r.coeff })) : all;
-    rows = rows.filter(r => (!search || [r.code, r.attr.name, r.attr.make_dept].some(v => String(v || '').toLowerCase().includes(search))) && (!q.site || r.sites.sites.some(s => s.key === q.site)) && (!q.industry || r.attr.make_dept === q.industry) && (!q.risk || (q.risk === 'shortage' ? r.gap > C.EPS : q.risk === 'coverage' ? r.coverageGap > C.EPS : q.risk === 'single' ? r.sites.single : q.risk === 'concentrated' ? r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration : q.risk === 'incomplete' ? !r.complete : r.risks.length > 0)));
-    rows.sort((a, b) => (b.gap ?? -Infinity) - (a.gap ?? -Infinity) || a.code.localeCompare(b.code));
+    const indexed = Query.view(engine, month, mode, source), dashboard = indexed.dashboard;
+    let input = indexed.rows;
+    if (q.role === 'demand' && q.code) {
+      if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
+      input = Query.dependencies(engine, q.code, month, mode, source).sort(Query.compare);
+    }
+    const rows = Query.filter(indexed, q, engine, input);
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
     return { trace, dashboard, total, offset, limit, months: engine.months, rows: rows.slice(offset, offset + limit).map(r => this.compact(r)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' };
   }
   compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '', category: r.attr.part_category || '', supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
+  insights(q, actor) { return require('./insights')(this, q, actor); }
+  prepareSimulation(q, actor) { const { engine, trace } = this.context(q, actor); return { ready: true, trace, codes: engine.graph.codes.length, note: '推演线程已装载该基线；后续模拟仍为独立情景，不修改基线。' }; }
   detail(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), code = q.code;
-    if (!e.graph.codes.includes(code)) throw error('编码不存在', 404);
+    if (!e.orderIndex.has(code)) throw error('编码不存在', 404);
     const row = e.row(code, month, mode, source), targets = e.relations(code, mode).map(r => { const net = e.net(r.code, month); return { ...r, forecast: net.raw, remove: net.remove, known: net.known, demand: net.demand == null ? null : net.demand * r.coeff, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
     const paths = e.paths(code, month, mode, source), details = e.months.map(m => { const r = e.row(code, m, mode, source); return { month: m, raw: r.raw, add: r.add, remove: r.remove, ...this.compact(r) }; });
     return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, source: r._source })) };
   }
   graph(q, actor) {
-    const { engine: e, month, mode, source, trace } = this.context(q, actor), all = e.compute(month, mode, source), limit = int(q.limit, 500, 1, 1000), depth = int(q.depth, 3, 1, 10);
+    const { engine: e, month, mode, source, trace } = this.context(q, actor), limit = int(q.limit, 500, 1, 1000), depth = int(q.depth, 3, 1, 10);
     let visible, truncated = false;
-    if (q.code && all.has(q.code)) {
+    if (q.code && !e.orderIndex.has(q.code)) throw error('编码不存在', 404);
+    if (q.code) {
       visible = new Set([q.code]); let queue = [q.code];
       for (let d = 0; d < depth; d++) { const next = []; for (const c of queue) for (const edge of [...e.graph.parents.get(c), ...e.graph.children.get(c)]) { const id = edge.parent === c ? edge.child : edge.parent; if (visible.has(id)) continue; if (visible.size >= limit) { truncated = true; continue; } visible.add(id); next.push(id); } queue = next; }
     } else {
@@ -178,13 +198,13 @@ class Service {
         for (const r of primary) {
           for (const rel of e.relations(r.code, mode)) {
             if (visible.size >= limit) { truncated = true; break; }
-            if (!visible.has(rel.code) && all.has(rel.code)) visible.add(rel.code);
+            if (!visible.has(rel.code) && e.orderIndex.has(rel.code)) visible.add(rel.code);
           }
           if (visible.size >= limit) { truncated = true; break; }
         }
       }
     }
-    const paths = q.code && all.has(q.code) ? e.paths(q.code, month, mode, source) : null, criticalEdges = new Set(), riskEdges = new Set();
+    const paths = q.code ? e.paths(q.code, month, mode, source) : null, criticalEdges = new Set(), riskEdges = new Set();
     if (paths?.critical?.complete) for (let i = 1; i < paths.critical.path.length; i++) criticalEdges.add(JSON.stringify([paths.critical.path[i - 1], paths.critical.path[i]]));
     if (paths) for (const r of paths.edges) riskEdges.add(JSON.stringify([r.parent, r.child]));
     const raw = q.graphRelations === 'bom', links = [];
@@ -192,18 +212,20 @@ class Service {
       const rs = raw ? e.graph.parents.get(code).map(r => ({ code: r.parent, coeff: r.qty, kind: 'BOM' })) : e.relations(code, mode);
       for (const r of rs) if (visible.has(r.code)) links.push({ source: r.code, target: code, qty: r.coeff, kind: r.kind, critical: criticalEdges.has(JSON.stringify([r.code, code])), risk: riskEdges.has(JSON.stringify([r.code, code])) });
     }
-    return { trace, nodes: [...visible].map(code => ({ ...this.compact(all.get(code)), level: e.graph.level.get(code), local: e.local(code) ?? null })), edges: links.slice(0, 5000), truncated: truncated || links.length > 5000, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
+    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), local: e.local(code) ?? null })), edges: links.slice(0, 5000), truncated: truncated || links.length > 5000, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
   }
   report(q, actor) {
-    const { engine: e, month, mode, source, trace } = this.context(q, actor), rows = [...e.compute(month, mode, source).values()], sites = new Map();
+    const { engine: e, month, mode, source, trace } = this.context(q, actor), indexed = Query.view(e, month, mode, source), rows = indexed.rows, sites = new Map();
+    if (indexed.report) return { trace, ...indexed.report };
     for (const r of rows) for (const s of r.sites.sites) { if (!sites.has(s.key)) sites.set(s.key, { code: s.key, name: s.name, codes: 0, single: 0, shortage: 0, quantity: 0 }); const x = sites.get(s.key); x.codes++; x.quantity += s.qty; if (r.sites.single) x.single++; if (r.gap > C.EPS) x.shortage++; }
-    const top = rows.filter(r => r.gap > C.EPS).sort((a, b) => b.gap - a.gap).slice(0, 20);
+    const top = rows.filter(r => r.gap > C.EPS).slice(0, 20);
     const heatCodes = top.slice(0, 12).map(r => r.code), matrix = e.months.map(m => { return heatCodes.map(c => e.row(c, m, mode, source).gap); });
-    return { trace, sites: [...sites.values()].sort((a, b) => b.shortage - a.shortage), top: top.map(r => this.compact(r)), single: rows.filter(r => r.sites.single).slice(0, 200).map(r => this.compact(r)), singleTotal: rows.filter(r => r.sites.single).length, heatmap: heatCodes.map((code, i) => ({ code, cells: matrix.map(row => row[i]) })), months: e.months, note: '加工地数量为当前月计划安排；无历史指令时不生成交期健康度结论。' };
+    indexed.report = { sites: [...sites.values()].sort((a, b) => b.shortage - a.shortage), top: top.map(r => this.compact(r)), single: rows.filter(r => r.sites.single).slice(0, 200).map(r => this.compact(r)), singleTotal: rows.filter(r => r.sites.single).length, heatmap: heatCodes.map((code, i) => ({ code, cells: matrix.map(row => row[i]) })), months: e.months, note: '加工地数量为当前月计划安排；无历史指令时不生成交期健康度结论。' };
+    return { trace, ...indexed.report };
   }
   simulate(body, actor) {
     const base = this.state(body.baseRevision == null ? undefined : int(body.baseRevision, 0, 0, 1e9)), version = body.version || [...new Set(base.tables.forecast.map(r => r.plan_date))].sort().at(-1);
-    const request = { ...body, version }, after = changesFor(base, request, version), beforeEngine = this.engine({ revision: base.revision, version }, actor), afterEngine = new Engine(after, version, beforeEngine.graph);
+    const request = { ...body, version }, after = changesFor(base, request, version, true), beforeEngine = this.engine({ revision: base.revision, version }, actor), afterEngine = new Engine(after, version, beforeEngine.graph);
     const month = body.month || beforeEngine.months[0], mode = body.mode || 'cross', source = body.source || 'forecast';
     if (!['direct', 'cross', 'top'].includes(mode) || !['forecast', 'mo'].includes(source)) throw error('推演口径无效');
     const touched = this.reuseMatrices(beforeEngine, afterEngine, request);
@@ -275,7 +297,7 @@ class Service {
     const v = C.validate(s); if (v.errors.length) throw error('关联校验失败', 422, v.errors);
     return this.publish(s, body.baseRevision, actor, 'maintain:' + body.table);
   }
-  table(q) { if (!C.schemas[q.table]) throw error('表名无效'); return this.store.table(q.table, q.code, int(q.offset, 0, 0, 1e9), int(q.limit, 100, 1, 1000)); }
+  table(q) { if (!Object.hasOwn(C.schemas, q.table)) throw error('表名无效'); const revision = q.revision == null || q.revision === '' ? this.store.revision() : int(q.revision, 0, 0, 1e9); return { ...this.store.table(q.table, q.code, int(q.offset, 0, 0, 1e9), int(q.limit, 100, 1, 1000), revision), revision }; }
   export(q) { return Importer.workbook(q.kind === 'template' ? C.empty() : q.kind === 'sample' ? C.sampleLarge(0.1) : this.state(), q.kind === 'template'); }
 }
 module.exports = { Service, changesFor, error };

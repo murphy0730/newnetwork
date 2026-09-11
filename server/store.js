@@ -75,8 +75,9 @@ class Store {
   history() { return this.db.prepare('SELECT revision,created_at,kind FROM snapshots ORDER BY revision DESC LIMIT 50').all(); }
   derived(revision, version) { const artifact = this.artifact(revision); if (artifact) return artifact.derived(version); const row = this.db.prepare('SELECT payload FROM derived WHERE revision=? AND version=? AND algorithm=?').get(revision, version, algorithm); return row ? require('node:v8').deserialize(gunzipSync(row.payload)) : null; }
   saveDerived(revision, version, value) { this.db.prepare('INSERT OR REPLACE INTO derived VALUES(?,?,?,?)').run(revision, version, algorithm, gzipSync(require('node:v8').serialize(value))); }
-  table(table, code, offset, limit) {
-    const artifact = this.artifact(); if (artifact) return artifact.table(table, code, offset, limit);
+  table(table, code, offset, limit, revision = this.revision()) {
+    const artifact = this.artifact(revision); if (artifact) return artifact.table(table, code, offset, limit);
+    if (revision !== this.revision()) { const values = this.load(revision).tables[table], rows = code ? values.filter(r => r.code === code) : values; return { total: rows.length, rows: rows.slice(offset, offset + limit) }; }
     const where = code ? 'table_name=? AND code=?' : 'table_name=?', args = code ? [table, code] : [table];
     this.db.exec('BEGIN');
     try {

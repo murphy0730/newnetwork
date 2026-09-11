@@ -141,6 +141,17 @@ class Artifact {
     return this.manifest;
   }
   table(table, code, offset, limit) {
+    if (this.snapshot) {
+      const values = this.snapshot.tables[table];
+      if (!code) return { total: values.length, rows: values.slice(offset, offset + limit) };
+      this.tableIndexes ||= new Map();
+      if (!this.tableIndexes.has(table)) {
+        const index = new Map(); for (const row of values) { if (!index.has(row.code)) index.set(row.code, []); index.get(row.code).push(row); }
+        if (this.tableIndexes.size >= 2) this.tableIndexes.delete(this.tableIndexes.keys().next().value);
+        this.tableIndexes.set(table, index);
+      }
+      const matches = this.tableIndexes.get(table).get(code) || []; return { total: matches.length, rows: matches.slice(offset, offset + limit) };
+    }
     let total = 0; const rows = [];
     const values = this.snapshot ? this.snapshot.tables[table] : this.rows('table/' + table);
     for (const row of values) if (!code || row.code === code) { if (total >= offset && rows.length < limit) rows.push(row); total++; }

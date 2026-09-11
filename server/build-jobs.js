@@ -64,11 +64,20 @@ class BuildJobs {
         const heap = Number(process.env.BUILD_HEAP_MB || 8192);
         if (!Number.isInteger(heap) || heap < 256) return reject(failure('BUILD_HEAP_MB须为至少256的整数'));
         const child = fork(path.join(__dirname, 'build.js'), [], { windowsHide: true, execArgv: ['--max-old-space-size=' + heap], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
-        this.children.set(job.id, child); let output = '', settled = false;
+        this.children.set(job.id, child); let output = '', message, childError;
         child.stderr.on('data', b => { output = (output + b).slice(-4000); });
-        child.on('message', m => { if (m.progress) progress(m.progress); else if (!settled) { settled = true; if (m.error) reject(Object.assign(Error(m.error.message), m.error)); else resolve(m.result); } });
-        child.on('error', e => { settled = true; reject(e); });
-        child.on('exit', (code, signal) => { this.children.delete(job.id); if (!settled) reject(failure(job.status !== 'running' ? '构建已取消' : `构建进程退出（${signal || code}）。当前版本保留；请检查内存/磁盘或拆分文件重试。${/heap out of memory|Allocation failed/i.test(output) ? ' 构建进程内存不足，可调整BUILD_HEAP_MB。' : ''}`, 500)); });
+        child.on('message', m => { if (m.progress) progress(m.progress); else message = m; });
+        child.on('error', e => { childError = e; reject(e); });
+        child.on('exit', (code, signal) => {
+          this.children.delete(job.id);
+          // Do not overlap two multi-GB builders: their heap is released on exit,
+          // not when the result message happens to reach the HTTP process.
+          if (childError) return;
+          if (job.status !== 'running') return reject(failure('构建已取消', 409));
+          if (message?.error) return reject(Object.assign(Error(message.error.message), message.error));
+          if (code === 0 && message && Object.hasOwn(message, 'result')) return resolve(message.result);
+          reject(failure(`构建进程退出（${signal || code}）。当前版本保留；请检查内存/磁盘或拆分文件重试。${/heap out of memory|Allocation failed/i.test(output) ? ' 构建进程内存不足，可调整BUILD_HEAP_MB。' : ''}`, 500));
+        });
         child.send(spec);
       });
     });
@@ -120,6 +129,9 @@ class BuildJobs {
     }, [item.path], true);
   }
   commit(body, actor) {
+    const previewFile = this.file('previews', body.previewId);
+    const previous = [...this.jobs.values()].find(j => j.actor === actor && j.kind === 'activate' && ['running', 'completed'].includes(j.status) && j.resources.includes(previewFile));
+    if (previous) return { jobId: previous.id, status: previous.status, poll: '/api/jobs/' + previous.id };
     let preview; try { preview = JSON.parse(fs.readFileSync(this.file('previews', body.previewId), 'utf8')); } catch { throw failure('构建预览已失效，请重新构建或上传产物', 404); }
     if (preview.actor !== actor || preview.expires < Date.now()) throw failure('构建预览过期或无权访问', 404);
     return this.create(actor, 'activate', (job, progress) => this.activate(preview.path, preview.baseRevision, actor, 'import', progress, job), [this.file('previews', preview.id)], false, [preview.path]);

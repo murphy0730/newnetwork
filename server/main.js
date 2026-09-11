@@ -2,7 +2,9 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { Worker } = require('node:worker_threads');
+const Lane = require('./lane');
+const { monitorEventLoopDelay } = require('node:perf_hooks');
+const os = require('node:os');
 const { randomUUID, timingSafeEqual } = require('node:crypto');
 const { createOpenAPI, toolsManifest } = require('./openapi');
 const Store = require('./store'), BuildJobs = require('./build-jobs'), C = require('../forecast-core');
@@ -23,39 +25,27 @@ function auth(req) {
   if (session && session.expires > Date.now()) return session;
   return null;
 }
-class Lane {
-  constructor(options = {}) { this.options = options; this.pending = new Map(); this.spawn(); }
-  spawn() {
-    let preload = this.options.preload;
-    if (!preload && this.options.reader) { const ref = catalog.db.prepare('SELECT path,revision FROM artifact_refs WHERE revision=?').get(catalog.revision()); if (ref) preload = { path: path.resolve(path.dirname(dbPath), ref.path), revision: ref.revision }; }
-    this.loaded = false; this.lastError = null;
-    this.worker = new Worker(path.join(__dirname, 'worker.js'), { workerData: { dbPath, preload }, resourceLimits: { maxOldGenerationSizeMb: Number(process.env.SERVICE_HEAP_MB || 6144) } });
-    this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
-    this.ready.catch(() => {});
-    this.worker.on('message', m => { if (m.ready) { this.loaded = true; return this.resolveReady(); } const p = this.pending.get(m.id); if (!p) return; this.pending.delete(m.id); if (m.error) p.reject(Object.assign(Error(m.error.message), m.error)); else p.resolve(m.result); if (this.retired && !this.pending.size) this.worker.terminate(); });
-    this.worker.on('error', e => { this.lastError = e.message; this.rejectReady(e); for (const p of this.pending.values()) p.reject(e); this.pending.clear(); });
-    this.worker.on('exit', code => { if (!this.loaded) this.rejectReady(Error(this.lastError || `装载进程退出(${code})，请检查产物或内存配置`)); if (!stopping && !this.retired) { for (const p of this.pending.values()) p.reject(Error('查询进程退出；已提交版本保留，请稍后重试')); this.pending.clear(); if (this.loaded && !this.options.preload) setTimeout(() => this.spawn(), 1000); } });
-  }
-  async call(method, args, actor) { await this.ready; if (this.pending.size >= 32) throw Object.assign(Error('计算队列繁忙，请稍后重试'), { status: 429 }); const id = randomUUID(); return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.worker.postMessage({ id, method, args, actor }); }); }
-  retire() { this.retired = true; if (!this.pending.size) this.worker.terminate(); }
-}
 let stopping = false;
-const writer = new Lane();
-let reader = new Lane({ reader: true }), publication = Promise.resolve();
+const lanes = new Set();
+const currentPreload = () => { const ref = catalog.db.prepare('SELECT path,revision FROM artifact_refs WHERE revision=?').get(catalog.revision()); return ref ? { path: path.resolve(path.dirname(dbPath), ref.path), revision: ref.revision } : undefined; };
+const makeLane = options => { const lane = new Lane({ dbPath, loadTimeoutMs: Number(process.env.LOAD_TIMEOUT_MS || 120000), onClose: item => lanes.delete(item), ...options }); lanes.add(lane); return lane; };
+const writer = makeLane({ timeoutMs: Number(process.env.SIMULATION_TIMEOUT_MS || 120000) });
+let reader = makeLane({ getPreload: currentPreload, timeoutMs: Number(process.env.QUERY_TIMEOUT_MS || 30000) }), publication = Promise.resolve();
+const eventLoop = monitorEventLoopDelay({ resolution: 20 }); eventLoop.enable();
 const buildJobs = new BuildJobs(catalog, activateArtifact);
 function activateArtifact(filename, expected, actor, action, progress, job) {
   const task = publication.catch(() => {}).then(async () => {
     if (job.status !== 'running') throw Object.assign(Error('装载任务已取消'), { status: 409 });
     if (catalog.revision() !== expected) throw Object.assign(Error('当前版本已变化，构建产物未发布，请重新构建'), { status: 409 });
     progress({ phase: 'load', percent: 96, message: '装载预计算产物，当前版本继续提供查询' });
-    const staged = new Lane({ preload: { path: filename, revision: expected + 1 } });
+    const staged = makeLane({ preload: { path: filename, revision: expected + 1 }, timeoutMs: Number(process.env.QUERY_TIMEOUT_MS || 30000) });
     buildJobs.cancellers.set(job.id, () => staged.retire());
     try {
       await staged.ready;
       if (job.status !== 'running') throw Object.assign(Error('装载已取消'), { status: 409 });
       progress({ phase: 'publish', percent: 99, message: '原子切换在线版本' });
       catalog.activate(filename, expected, actor, action);
-      const previous = reader; reader = staged; staged.options = { reader: true }; previous.retire();
+      const previous = reader; reader = staged; delete staged.options.preload; staged.options.getPreload = currentPreload; previous.retire();
       return catalog.info();
     } catch (e) { staged.retire(); throw e; } finally { buildJobs.cancellers.delete(job.id); }
   });
@@ -65,7 +55,7 @@ function json(res, status, value) { const body = JSON.stringify(value); res.writ
 async function body(req) {
   const chunks = []; let size = 0; for await (const c of req) { size += c.length; if (size > 64 * 1024 * 1024) throw Object.assign(Error('JSON请求超过64MiB，大型数据请用CSV或构建产物流式上传'), { status: 413 }); chunks.push(c); }
   const b = Buffer.concat(chunks);
-  try { return b.length ? JSON.parse(b.toString('utf8')) : {}; } catch { throw Object.assign(Error('JSON请求格式错误'), { status: 400 }); }
+  try { const parsed = b.length ? JSON.parse(b.toString('utf8')) : {}; if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw Error('object required'); return parsed; } catch { throw Object.assign(Error('JSON请求格式错误，请传入对象'), { status: 400 }); }
 }
 function requireRole(user, role) { const rank = { viewer: 0, planner: 1, admin: 2 }; if (rank[user.role] < rank[role]) throw Object.assign(Error('当前角色无权执行此操作'), { status: 403 }); }
 function job(res, method, args, user) {
@@ -73,11 +63,14 @@ function job(res, method, args, user) {
   json(res, 202, task);
 }
 const staticFiles = new Map([['/', 'index.html'], ['/index.html', 'index.html'], ['/base.css', 'base.css'], ['/forecast.css', 'forecast.css'], ['/forecast-app.js', 'forecast-app.js'], ['/forecast-core.js', 'forecast-core.js'], ['/forecast-graph.js', 'forecast-graph.js'], ['/vendor/echarts.js', 'vendor/echarts.js'], ['/vendor/xlsx.js', 'vendor/xlsx.js'], ['/vendor/g6.min.js', 'vendor/g6.min.js']]);
-const readRoutes = new Map([['/api/meta', 'meta'], ['/api/analysis', 'list'], ['/api/nodes', 'detail'], ['/api/graph', 'graph'], ['/api/reports', 'report'], ['/api/tables', 'table']]);
+const readRoutes = new Map([['/api/meta', 'meta'], ['/api/analysis', 'list'], ['/api/nodes', 'detail'], ['/api/insights', 'insights'], ['/api/graph', 'graph'], ['/api/reports', 'report'], ['/api/tables', 'table']]);
 const writeRoutes = new Map([['/api/import/preview', ['preview', 'admin']], ['/api/import/commit', ['commit', 'admin']], ['/api/config', ['config', 'admin']], ['/api/sample', ['sample', 'admin']], ['/api/sample-large', ['sampleLarge', 'admin']], ['/api/restore', ['restore', 'admin']], ['/api/scenarios', ['simulate', 'planner']]]);
 writeRoutes.set('/api/maintain', ['maintain', 'admin']);
 writeRoutes.set('/api/builds/rebuild', ['rebuild', 'admin']);
 const server = http.createServer(async (req, res) => {
+  const requestId = /^[a-zA-Z0-9_-]{1,64}$/.test(req.headers['x-request-id'] || '') ? req.headers['x-request-id'] : randomUUID();
+  res.setHeader('X-Request-ID', requestId);
+  const requestAbort = new AbortController(); res.once('close', () => { if (!res.writableEnded) requestAbort.abort(); });
   try {
     const url = new URL(req.url, 'http://localhost'), q = Object.fromEntries(url.searchParams), pathname = url.pathname;
     if (localOnly && !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(req.headers.host || '')) throw Object.assign(Error('Host不被允许'), { status: 403 });
@@ -87,6 +80,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': types[ext] + '; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-cache', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" }); fs.createReadStream(file).pipe(res); return;
     }
     if (pathname === '/api/health') return json(res, 200, { ok: true, engine: 'prebuilt-artifact', ready: reader.loaded, loadError: reader.lastError, queue: writer.pending.size + reader.pending.size });
+    if (pathname === '/api/ready') return json(res, reader.loaded ? 200 : 503, { ready: reader.loaded, error: reader.lastError });
     if (pathname === '/api/session' && req.method === 'POST') {
       const data = await body(req), token = String(data.token || ''), match = tokens.find(([, t]) => equal(token, t));
       if (!match) throw Object.assign(Error('访问令牌无效'), { status: 401 });
@@ -94,6 +88,15 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Set-Cookie', `tower_session=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.COOKIE_SECURE === '1' ? '; Secure' : ''}`); return json(res, 200, { role: match[0] });
     }
     const user = auth(req); if (!user) throw Object.assign(Error('请使用访问令牌登录'), { status: 401 });
+    if (pathname === '/api/diagnostics' && req.method === 'GET') {
+      requireRole(user, 'admin');
+      const disk = fs.statfsSync(path.dirname(dbPath));
+      return json(res, 200, { revision: catalog.revision(), uptimeSeconds: process.uptime(), node: process.version, memory: process.memoryUsage(), systemMemory: { freeBytes: os.freemem(), totalBytes: os.totalmem() }, disk: { availableBytes: disk.bavail * disk.bsize }, eventLoop: { p95Ms: eventLoop.percentile(95) / 1e6, maxMs: eventLoop.max / 1e6 }, reader: reader.diagnostics(), simulation: writer.diagnostics(), loadingReaders: [...lanes].filter(l => l !== reader && l !== writer).map(l => l.diagnostics()), builds: { running: [...buildJobs.jobs.values()].filter(j => j.status === 'running').length, childProcesses: buildJobs.children.size }, note: '延迟为最近128次线程调用（含排队）；RSS为整个服务进程，包含线程，不可逐线程相加。构建子进程内存不在此RSS内。' });
+    }
+    if (pathname === '/api/scenarios/prepare' && req.method === 'POST') {
+      requireRole(user, 'planner'); const args = await body(req), pinned = { ...args, revision: args.revision == null ? catalog.revision() : args.revision }; delete pinned.scenario;
+      return json(res, 202, buildJobs.create(user.actor, 'prepareSimulation', async (job, progress) => { progress({ phase: 'load', message: '正在装载推演基线，可继续浏览网络', percent: 10 }); return writer.call('prepareSimulation', pinned, user.actor); }));
+    }
     if (pathname === '/api/session' && req.method === 'GET') return json(res, 200, user);
     if (pathname === '/api/openapi.json') return json(res, 200, createOpenAPI());
     if (pathname === '/api/ai/tools') return json(res, 200, toolsManifest());
@@ -106,7 +109,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/api/meta' && req.method === 'GET') return json(res, 200, catalog.info());
     if (pathname === '/api/export' && req.method === 'GET' && q.kind === 'template') { const bytes = require('./importer').workbook(C.empty(), true); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="supply-template.xlsx"' }); res.end(bytes); return; }
-    if (readRoutes.has(pathname) && req.method === 'GET') { const result = await reader.call(readRoutes.get(pathname), q, user.actor); return json(res, 200, result); }
+    if (readRoutes.has(pathname) && req.method === 'GET') { const pinned = !q.scenario && (q.revision == null || q.revision === '') ? { ...q, revision: catalog.revision() } : q; const result = await reader.call(readRoutes.get(pathname), pinned, user.actor, { signal: requestAbort.signal }); return json(res, 200, result); }
     if (pathname === '/api/export' && req.method === 'GET' && ['artifact', 'csv'].includes(q.kind)) {
       const ref = catalog.db.prepare('SELECT path FROM artifact_refs WHERE revision=?').get(catalog.revision());
       if (!ref) throw Object.assign(Error('当前数据尚未构建，请先启动重建'), { status: 409 });
@@ -128,15 +131,16 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/import/artifact' && req.method === 'POST') { requireRole(user, 'admin'); const revision = q.baseRevision == null ? catalog.revision() : Number(q.baseRevision); const item = await buildJobs.receive(req, String(q.name || ''), user.actor, true); return json(res, 202, buildJobs.uploadArtifact(item, revision)); }
     if (writeRoutes.has(pathname) && req.method === 'POST') { const [method, role] = writeRoutes.get(pathname); requireRole(user, role); return job(res, method, await body(req), user); }
     if (pathname === '/api/ai/invoke' && req.method === 'POST') {
-      const b = await body(req), methods = { analyze_supply: 'list', explain_code: 'detail', inspect_network: 'graph', get_reports: 'report' };
+      const b = await body(req), methods = { analyze_supply: 'list', explain_code: 'detail', inspect_network: 'graph', get_reports: 'report', summarize_code: 'insights' };
       if (b.tool === 'simulate_forecast') { requireRole(user, 'planner'); return job(res, 'simulate', b.arguments || {}, user); }
-      if (!methods[b.tool]) throw Object.assign(Error('不支持该工具；不接受任意SQL或代码执行'), { status: 400 });
-      return json(res, 200, await reader.call(methods[b.tool], b.arguments || {}, user.actor));
+      if (!Object.hasOwn(methods, b.tool)) throw Object.assign(Error('不支持该工具；不接受任意SQL或代码执行'), { status: 400 });
+      const args = b.arguments || {}, pinned = !args.scenario && (args.revision == null || args.revision === '') ? { ...args, revision: catalog.revision() } : args;
+      return json(res, 200, await reader.call(methods[b.tool], pinned, user.actor, { signal: requestAbort.signal }));
     }
     throw Object.assign(Error('接口不存在'), { status: 404 });
-  } catch (e) { if (!res.headersSent) json(res, e.status || 500, { error: { code: String(e.status || 500), message: e.message, details: e.details } }); else res.end(); }
+  } catch (e) { if (!res.headersSent) json(res, e.status || 500, { error: { code: e.code || String(e.status || 500), message: e.message, details: e.details, requestId } }); else res.end(); }
 });
 server.requestTimeout = 0; // Large uploads stream to disk; the browser controls build jobs separately.
 server.listen(port, host, () => console.log(`供应预测控制塔 http://${host}:${port} | 数据库 ${dbPath} | ${tokens.length ? '令牌权限已启用' : '仅本机访问'} | 离线构建/在线装载`));
-function shutdown() { stopping = true; buildJobs.shutdown(); server.close(); writer.worker.terminate(); reader.worker.terminate(); catalog.close(); }
+function shutdown() { stopping = true; buildJobs.shutdown(); server.close(); for (const lane of lanes) lane.close(); eventLoop.disable(); catalog.close(); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
