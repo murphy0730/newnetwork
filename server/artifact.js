@@ -25,6 +25,7 @@ function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], 
   for (const r of snapshot.tables.forecast) if (r.site_code || r.site_name) { const code = r.site_code || '名称:' + r.site_name; sites.set(code, { code, name: r.site_name || r.site_code }); }
   manifest.sites = [...sites.values()];
   manifest.categories = [...new Set(snapshot.tables.attributes.map(r => r.part_category).filter(Boolean))].sort();
+  manifest.departments = [...new Set(snapshot.tables.attributes.map(r => r.make_dept).filter(Boolean))].sort();
   const db = new DatabaseSync(temporary);
   try {
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;

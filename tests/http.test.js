@@ -44,17 +44,19 @@ test('HTTP roles, AI read/simulation tools, async jobs, exports and protected ba
     assert.equal(imported.codes, 500); assert.equal(imported.kind, 'imported');
     const graph = await (await req('/api/graph?code=MD-01&graphRelations=bom&limit=100', viewer)).json(); assert.ok(graph.nodes.length); assert.ok(graph.edges.length);
     for (const asset of ['/forecast-graph.js', '/vendor/g6.min.js']) assert.equal((await req(asset)).status, 200);
+    const attrMeta = await job('/api/maintain', admin, { baseRevision: imported.revision, table: 'attributes', rows: [{ code: 'CSV-0001', make_dept: '整机事业部', name: 'CSV测试件' }] }); // 新规则：表6有制造部门的编码才在分析范围
+    assert.equal(attrMeta.revision, 3);
     const csv = await upload('预测.csv', Buffer.from('计划日期,编码,预测月份,预测数量,加工地代码\n2026-09-10,CSV-0001,2026-09,120,S001\n'));
-    const csvPreview = await job('/api/import/preview', admin, { baseRevision: imported.revision, files: [{ id: csv.id, selections: [{ sheet: csv.sheets[0].name, table: 'forecast' }] }] });
+    const csvPreview = await job('/api/import/preview', admin, { baseRevision: attrMeta.revision, files: [{ id: csv.id, selections: [{ sheet: csv.sheets[0].name, table: 'forecast' }] }] });
     const csvMeta = await job('/api/import/commit', admin, { previewId: csvPreview.previewId });
-    assert.equal(csvMeta.revision, 3);
+    assert.equal(csvMeta.revision, 4);
     const csvData = await (await req('/api/analysis?version=2026-09-10&month=2026-09&search=CSV-0001', viewer)).json(); assert.equal(csvData.rows[0].supply, 120); assert.equal(csvData.rows[0].single, true);
     // import 文件夹一键导入：放入 CSV 后直接构建并发布
     fs.mkdirSync(path.join(dir, 'import'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'import', 'folder-test.csv'), '计划日期,编码,预测月份,预测数量,加工地代码\n2026-11-10,CSV-0001,2026-11,300,S001\n');
     const list = await (await req('/api/import/folder', viewer)).json(); assert.equal(list.files.length, 1);
     assert.equal((await req('/api/import/folder', viewer, {})).status, 403);
-    const folderMeta = await job('/api/import/folder', admin, {}); assert.equal(folderMeta.revision, 4);
+    const folderMeta = await job('/api/import/folder', admin, {}); assert.equal(folderMeta.revision, 5);
     const folderData = await (await req('/api/analysis?version=2026-11-10&month=2026-11&search=CSV-0001', viewer)).json(); assert.equal(folderData.rows[0].supply, 300);
     assert.equal((await req('/data/control-tower.sqlite', admin)).status, 404);
   } finally { child.kill(); }

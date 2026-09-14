@@ -463,5 +463,20 @@
     }
     return s;
   }
-  return { schemas, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, EPS };
+  // 编码范围预处理：表1编码 ∩ 表6已维护制造部门(make_dept非空) = 最终编码范围；
+  // 据此筛选预测、库存快照与BOM，范围外数据不参与图呈现与分析
+  function scopeTables(tables) {
+    const withDept = new Set();
+    for (const r of tables.attributes || []) if (r.make_dept) withDept.add(r.code);
+    const before = { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length };
+    if (!withDept.size) return { range: null, skipped: true, before, after: { ...before } }; // 表6为空时没有筛选依据，跳过预处理
+    const range = new Set();
+    for (const r of tables.forecast || []) if (withDept.has(r.code)) range.add(r.code);
+    tables.forecast = tables.forecast.filter(r => range.has(r.code));
+    tables.inventory = tables.inventory.filter(r => range.has(r.code));
+    tables.bom = tables.bom.filter(r => range.has(r.parent) && range.has(r.child));
+    return { range: range.size, skipped: false, before, after: { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length } };
+  }
+
+  return { schemas, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, scopeTables, EPS };
 });
