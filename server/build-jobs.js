@@ -8,7 +8,7 @@ const failure = (message, status = 400) => Object.assign(Error(message), { statu
 class BuildJobs {
   constructor(catalog, activate) {
     this.catalog = catalog; this.activate = activate; this.root = catalog.path + '.tasks'; this.jobs = new Map(); this.children = new Map(); this.cancellers = new Map(); this.tail = Promise.resolve();
-    for (const name of ['jobs', 'uploads', 'previews']) fs.mkdirSync(path.join(this.root, name), { recursive: true });
+    for (const name of ['jobs', 'uploads', 'previews', 'reports']) fs.mkdirSync(path.join(this.root, name), { recursive: true });
     fs.mkdirSync(catalog.artifactDir, { recursive: true });
     for (const name of fs.readdirSync(path.join(this.root, 'jobs'))) if (/^[a-f0-9-]+\.json$/.test(name)) {
       try { const job = JSON.parse(fs.readFileSync(path.join(this.root, 'jobs', name), 'utf8')); this.jobs.set(job.id, job); if (job.status === 'running') { job.status = 'failed'; job.error = { message: '服务重启中断了构建，请重新上传或重新启动构建；已提交版本保留', status: 409 }; this.cleanup([...(job.resources || []), ...(job.outputs || [])]); this.persist(job); } } catch {}
@@ -30,7 +30,7 @@ class BuildJobs {
   }
   sweep() {
     const now = Date.now();
-    for (const [id, job] of this.jobs) if (job.status !== 'running' && now - Date.parse(job.updated_at) > 7 * 86400000) { this.jobs.delete(id); this.cleanup([this.file('jobs', id)]); }
+    for (const [id, job] of this.jobs) if (job.status !== 'running' && now - Date.parse(job.updated_at) > 7 * 86400000) { this.jobs.delete(id); this.cleanup([this.file('jobs', id), this.file('reports', id), ...['', ...Object.keys(require('../forecast-core').schemas), 'unknown'].map(table => path.join(this.root, 'reports', id + (table ? '.' + table : '') + '.csv'))]); }
     const inUse = new Set([...this.jobs.values()].filter(j => j.status === 'running').flatMap(j => j.resources || []));
     for (const kind of ['uploads', 'previews']) for (const name of fs.readdirSync(path.join(this.root, kind))) if (/^[a-f0-9-]+\.json$/.test(name)) {
       const filename = path.join(this.root, kind, name);
@@ -54,6 +54,15 @@ class BuildJobs {
     return result;
   }
   get(id, actor) { const job = this.jobs.get(id); if (!job || job.actor !== actor) throw failure('任务不存在或无权访问', 404); return this.public(job); }
+  report(id, actor, table = '') {
+    const job = this.get(id, actor);
+    if (table && table !== 'unknown' && !Object.hasOwn(require('../forecast-core').schemas, table)) throw failure('无效问题清单表名');
+    const filename = path.join(this.root, 'reports', id + (table ? '.' + table : '') + '.csv');
+    if (job.status === 'running') throw failure('扫描尚未完成，请等待任务结束后下载完整清单', 409);
+    if (!job.issues) throw failure('任务未完成问题扫描，无法提供完整清单；请重新执行导入', 404);
+    if (!fs.existsSync(filename)) throw failure('该任务暂无可下载的问题清单，或清单已过期', 404);
+    return filename;
+  }
   list(actor) { return [...this.jobs.values()].filter(j => j.actor === actor).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 30).map(j => this.public(j)); }
   cancel(id, actor) { const job = this.jobs.get(id); this.get(id, actor); if (job.status !== 'running') return this.public(job); if (job.phase === 'publish') throw failure('版本正在原子发布，请等待完成', 409); job.status = 'failed'; job.error = { message: '任务已取消，当前数据版本未被替换', status: 409 }; this.persist(job); this.children.get(id)?.kill(); this.cancellers.get(id)?.(); this.cleanup(job.resources); return this.public(job); }
   child(job, spec, progress) {
@@ -74,11 +83,13 @@ class BuildJobs {
           // not when the result message happens to reach the HTTP process.
           if (childError) return;
           if (job.status !== 'running') return reject(failure('构建已取消', 409));
+          const issues = message?.result?.issues || message?.error?.issues;
+          if (issues) { job.issues = issues; this.persist(job); }
           if (message?.error) return reject(Object.assign(Error(message.error.message), message.error));
           if (code === 0 && message && Object.hasOwn(message, 'result')) return resolve(message.result);
           reject(failure(`构建进程退出（${signal || code}）。当前版本保留；请检查内存/磁盘或拆分文件重试。${/heap out of memory|Allocation failed/i.test(output) ? ' 构建进程内存不足，可调整BUILD_HEAP_MB。' : ''}`, 500));
         });
-        child.send(spec);
+        child.send({ ...spec, reportPrefix: path.join(this.root, 'reports', job.id) });
       });
     });
     this.tail = task; return task;
@@ -107,7 +118,7 @@ class BuildJobs {
   previewRecord(actor, filename, baseRevision, result) {
     const id = randomUUID(), preview = { id, actor, path: filename, baseRevision, expires: Date.now() + 86400000 };
     this.write(this.file('previews', id), preview);
-    return { previewId: id, baseRevision, summaries: result.summaries || [], warnings: result.manifest.warnings, counts: result.manifest.counts, replacesSample: !!result.replacesSample, buildId: result.manifest.buildId, codes: result.manifest.codes, versions: result.manifest.versions };
+    return { previewId: id, baseRevision, summaries: result.summaries || [], warnings: result.manifest.warnings, counts: result.manifest.counts, replacesSample: !!result.replacesSample, buildId: result.manifest.buildId, codes: result.manifest.codes, versions: result.manifest.versions, issues: result.issues };
   }
   preview(body, actor) {
     const files = [], resources = [];

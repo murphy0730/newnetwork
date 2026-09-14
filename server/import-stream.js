@@ -41,12 +41,12 @@ async function* csvRows(filename, { encoding = 'utf-8', progress = () => {}, max
   Object.assign(stats, { bytes, rows: records, sha256: digest.digest('hex') });
 }
 function excel(filename) { return XLSX.read(fs.readFileSync(filename), { type: 'buffer', cellNF: true, cellText: true, cellFormula: true }); }
-function* sheetRows(sheet, name, maxRows = Infinity) {
+function* sheetRows(sheet, name, maxRows = Infinity, onIssue) {
   if (!sheet['!ref']) return;
   const range = XLSX.utils.decode_range(sheet['!ref']);
   for (let ri = 0; ri <= range.e.r && ri < maxRows; ri++) {
     const row = [];
-    for (let ci = 0; ci <= range.e.c; ci++) { const cell = sheet[XLSX.utils.encode_cell({ r: ri, c: ci })]; if (cell?.f && cell.v == null) throw bad(`${name}第${ri + 1}行公式无缓存值，请在Excel中计算并保存`); row.push(cell ? cell.t === 'n' && /^0+$/.test(cell.z || '') && cell.w ? cell.w : cell.v ?? '' : ''); }
+    for (let ci = 0; ci <= range.e.c; ci++) { const address = XLSX.utils.encode_cell({ r: ri, c: ci }), cell = sheet[address]; if (cell?.f && cell.v == null) { const issue = { sheet: name, row: ri + 1, field: address, value: '=' + cell.f, message: '公式无缓存值，请在Excel中计算并保存' }; if (onIssue) onIssue(issue); else throw bad(`${name}第${ri + 1}行公式无缓存值，请在Excel中计算并保存`); } row.push(cell ? cell.t === 'n' && /^0+$/.test(cell.z || '') && cell.w ? cell.w : cell.v ?? '' : ''); }
     yield row;
   }
 }
@@ -59,19 +59,44 @@ async function inspect(filename, name) {
   }
   if (!['.xlsx', '.xls'].includes(ext)) throw bad('支持CSV、xlsx、xls原始表，或.supply构建产物');
   const wb = excel(filename);
-  return wb.SheetNames.map(name => { const sheet = wb.Sheets[name], rows = [...sheetRows(sheet, name, 20)], detected = C.detect(rows); return { name, rows: sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']).e.r : 0, detected: detected && rows.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null, preview: rows.slice(0, 5) }; });
+  return wb.SheetNames.map(name => { const sheet = wb.Sheets[name], rows = [...sheetRows(sheet, name, 20, () => {})], detected = C.detect(rows); return { name, rows: sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']).e.r : 0, detected: detected && rows.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null, preview: rows.slice(0, 5) }; });
 }
-async function normalize(iterator, table, meta, destination, progress = () => {}) {
+function parseBatch(table, header, batch, meta) {
+  const result = C.parseMatrix(table, [header, ...batch], { ...meta, headerRow: 0 });
+  if (result.errors.length < 1000 || batch.length <= 1) return result;
+  // The legacy shared parser caps errors. Revisit only saturated batches in
+  // smaller pieces, so a complete report never silently loses later errors.
+  const middle = Math.ceil(batch.length / 2), a = parseBatch(table, header, batch.slice(0, middle), meta), b = parseBatch(table, header, batch.slice(middle), meta);
+  for (const row of b.rows) row._source.row += middle;
+  for (const error of b.errors) if (error.row > 1) error.row += middle;
+  return { rows: a.rows.concat(b.rows), errors: a.errors.concat(b.errors) };
+}
+async function normalize(iterator, table, meta, destination, progress = () => {}, issues) {
   if (!Object.hasOwn(C.schemas, table)) throw bad('目标表无效');
   const headerRow = Number(meta.headerRow || 0);
   if (!Number.isInteger(headerRow) || headerRow < 0 || headerRow > 9) throw bad('表头行须为1至10');
   let header, rowNumber = 0, batch = [], count = 0, start = headerRow + 1;
   const flush = () => {
     if (!batch.length) return;
-    const result = C.parseMatrix(table, [header, ...batch], { ...meta, headerRow: 0 });
+    const result = parseBatch(table, header, batch, meta);
     const errors = result.errors.map(e => ({ ...e, row: e.row === 1 ? headerRow + 1 : e.row + start - 1 }));
-    if (errors.length && !errors.every(e => e.message === '没有数据行，未执行清空')) throw bad('字段校验失败', errors);
-    for (const r of result.rows) { r._source.row += start - 1; destination.push(r); count++; }
+    const meaningful = errors.filter(e => e.message !== '没有数据行，未执行清空');
+    if (meaningful.length && !issues) throw bad('字段校验失败', meaningful);
+    let fieldMap = new Map(); try { fieldMap = C.headerMap(table, header); } catch {}
+    for (const e of meaningful) {
+      const values = batch[e.row - start - 1] || header;
+      const key = Object.keys(C.schemas[table].fields).find(k => C.schemas[table].fields[k].label === e.field), index = fieldMap.get(key);
+      issues.add({ ...e, table, code: values[fieldMap.get('code')], parent: values[fieldMap.get('parent')], child: values[fieldMap.get('child')], value: index == null ? '' : values[index], raw: { headers: header, values } });
+    }
+    if (issues && table === 'bom') {
+      const map = C.headerMap(table, header);
+      for (let i = 0; i < batch.length; i++) {
+        const values = batch[i], value = values[map.get('qty')];
+        if (String(value ?? '').trim() && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) < 0.01) issues.add({ table, ...meta, row: start + i + 1, parent: values[map.get('parent')], child: values[map.get('child')], field: 'qty', value, message: 'BOM配比小于0.01', severity: 'warning', action: '按既有规则过滤此父子项', raw: { headers: header, values } });
+      }
+    }
+    const invalid = new Set(meaningful.map(e => e.row));
+    for (const r of result.rows) { r._source.row += start - 1; if (!invalid.has(r._source.row)) { destination.push(r); count++; } }
     batch = []; start = rowNumber;
     progress({ phase: 'normalize', message: `${meta.sheet}：已校验 ${count} 行` });
   };
@@ -80,12 +105,15 @@ async function normalize(iterator, table, meta, destination, progress = () => {}
   if (!count) throw bad('没有有效数据行，未执行清空', [{ ...meta, row: headerRow + 1, message: '空表请跳过' }]);
   return count;
 }
-async function readInputs(files, progress = () => {}) {
+async function readInputs(files, progress = () => {}, issues) {
   const groups = new Map(), summaries = [], sources = [];
+  async function attempt(fn, context) {
+    try { return await fn(); } catch (e) { if (!issues) throw e; for (const d of e.details || [{ message: e.message }]) issues.add({ ...context, field: '文件/工作表', row: Number(e.message.match(/第(\d+)/)?.[1] || 0), ...d }); return null; }
+  }
   for (const file of files) {
     const ext = path.extname(file.name || file.path).toLowerCase(), name = file.name || path.basename(file.path);
     const destination = table => { if (!groups.has(table)) groups.set(table, []); return groups.get(table); };
-    if (ext === '.csv') {
+    await attempt(async () => { if (ext === '.csv') {
       let selected = (file.selections || [{ sheet: path.basename(name, ext), table: file.table, headerRow: file.headerRow }]).filter(s => s.table);
       if (!selected.length) { // 未指定目标表（如文件夹一键导入）：按前20行自动识别
         const head = []; for await (const row of csvRows(file.path, { encoding: await encodingFor(file.path, true), maxRows: 20 })) head.push(row);
@@ -93,13 +121,15 @@ async function readInputs(files, progress = () => {}) {
         if (detected) selected = [{ sheet: path.basename(name, ext), table: detected.table, headerRow: detected.headerRow }];
       }
       if (selected.length > 1) throw bad('同一CSV不能重复选择多个目标表');
-      for (const selection of selected) { const stats = {}, rows = await normalize(csvRows(file.path, { encoding: await encodingFor(file.path), progress, stats }), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow }, destination(selection.table), progress); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); sources.push({ name, ...stats }); }
+      if (!selected.length && !file.selections) issues?.add({ file: name, table: file.table, field: '表头', message: '无法自动识别目标表，请检查表头或手工选择类型' });
+      for (const selection of selected) await attempt(async () => { const stats = {}, rows = await normalize(csvRows(file.path, { encoding: await encodingFor(file.path), progress, stats }), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow }, destination(selection.table), progress, issues); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); sources.push({ name, ...stats }); }, { file: name, sheet: selection.sheet, table: selection.table });
     } else if (['.xlsx', '.xls'].includes(ext)) {
       progress({ phase: 'parse', message: `解析Excel ${name}（大型工作簿需足够内存，可改用分片CSV）` });
-      const wb = excel(file.path), selections = file.selections || wb.SheetNames.map(sheet => ({ sheet, ...C.detect([...sheetRows(wb.Sheets[sheet], sheet, 20)]) }));
-      for (const selection of selections.filter(s => s.table)) { if (!wb.Sheets[selection.sheet]) throw bad('指定工作表不存在'); const rows = await normalize(sheetRows(wb.Sheets[selection.sheet], selection.sheet), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow, date1904: !!wb.Workbook?.WBProps?.date1904 }, destination(selection.table), progress); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); }
+      const wb = excel(file.path), selections = file.selections || wb.SheetNames.map(sheet => ({ sheet, ...C.detect([...sheetRows(wb.Sheets[sheet], sheet, 20, () => {})]) }));
+      if (issues && !file.selections) for (const s of selections) if (!s.table && s.sheet !== '填写说明' && wb.Sheets[s.sheet]['!ref']) issues.add({ file: name, sheet: s.sheet, field: '表头', message: '未识别工作表类型，请检查表头或手工选择目标表' });
+      for (const selection of selections.filter(s => s.table)) await attempt(async () => { if (!wb.Sheets[selection.sheet]) throw bad('指定工作表不存在'); const rows = await normalize(sheetRows(wb.Sheets[selection.sheet], selection.sheet, Infinity, issues ? e => issues.add({ ...e, file: name, table: selection.table }) : undefined), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow, date1904: !!wb.Workbook?.WBProps?.date1904 }, destination(selection.table), progress, issues); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); }, { file: name, sheet: selection.sheet, table: selection.table });
       const digest = createHash('sha256'); for await (const chunk of fs.createReadStream(file.path)) digest.update(chunk); sources.push({ name, bytes: fs.statSync(file.path).size, sha256: digest.digest('hex') });
-    } else throw bad('原始表格式应为CSV、xlsx或xls');
+    } else throw bad('原始表格式应为CSV、xlsx或xls'); }, { file: name, table: file.table });
   }
   return { batches: [...groups].map(([table, rows]) => ({ table, rows })), summaries, sources };
 }
@@ -112,4 +142,4 @@ function merge(base, batches) {
   }
   return next;
 }
-module.exports = { inspect, csvRows, normalize, readInputs, merge };
+module.exports = { inspect, csvRows, normalize, readInputs, merge, parseBatch };

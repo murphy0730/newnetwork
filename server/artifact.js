@@ -11,12 +11,12 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = message => Object.assign(Error(message), { status: 422 });
 const maximumLevel = graph => { let max = -1; for (const level of graph.level.values()) max = Math.max(max, level); return max + 1; };
 
-function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], prepared } = {}) {
+function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], prepared, validation: suppliedValidation } = {}) {
   if (fs.existsSync(filename)) throw fail('构建目标已存在，请使用新的产物文件名');
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const temporary = filename + '.partial', started = Date.now();
-  const validation = C.validate(snapshot);
-  if (validation.errors.length) throw Object.assign(fail('关联校验失败'), { details: validation.errors.slice(0, 1000) });
+  const validation = suppliedValidation || C.validate(snapshot);
+  if (validation.errors.length) throw Object.assign(fail('关联校验失败'), { details: validation.errors });
   progress({ phase: 'graph', message: '建立BOM图及周期路径', percent: 35 });
   const graph = C.topology(snapshot.tables), versions = [...new Set(snapshot.tables.forecast.map(r => r.plan_date))].sort();
   const counts = Object.fromEntries(Object.entries(snapshot.tables).map(([k, rows]) => [k, rows.length]));

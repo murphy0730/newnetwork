@@ -49,7 +49,7 @@ function publicRows(table, rows) {
   for (const r of rows) { if (!r || typeof r !== 'object' || Array.isArray(r)) throw Error('数据行须为对象'); for (const key of Object.keys(r)) if (!key.startsWith('_')) fields.add(key); if (fields.size > 200) throw Error('API数据最多200列'); }
   const keys = [...fields];
   if (keys.length * rows.length > 100000000) throw Error('单批API数据最多1亿单元格');
-  return C.parseMatrix(table, [keys, ...rows.map(r => keys.map(k => r[k] == null ? '' : r[k]))], { file: 'API', sheet: table });
+  return require('./import-stream').parseBatch(table, keys, rows.map(r => keys.map(k => r[k] == null ? '' : r[k])), { file: 'API', sheet: table });
 }
 function workbook(snapshot, template = false) {
   const wb = XLSX.utils.book_new(), sample = C.sample();
@@ -67,7 +67,7 @@ function workbook(snapshot, template = false) {
       ['2. 编码请用文本格式保存（避免科学计数法）；月份格式YYYY-MM；日期格式YYYY-MM-DD；布尔字段填 是/否。'],
       ['3. 预测按计划日期覆盖完整版本，库存按日期覆盖完整快照；BOM、制造属性、调整表、产业映射整表替换；多文件多表作为同一批次校验，确认后原子提交并预计算。'],
       ['4. 大型数据建议按表分片CSV。在线流式上传，独立进程构建，页面可查看阶段、错误和结果；不设文件总量/总单元格/编码数上限，实际受机器内存、磁盘及Excel格式限制。'],
-      ['5. 库存可用量支持负数（按减法计入），子库类型可留空；表6制造部门可留空（预处理阶段过滤出编码范围）；BOM 配比（子项单位用量）小于 0.01 的父子项会被自动过滤。'],
+      ['5. 库存可用量支持负数（按减法计入），子库类型可留空；表6制造部门留空会记录数据问题；BOM配比小于0.01及编码范围过滤也会逐行记录。成功或失败任务均可下载全部及分表问题CSV，保留7天。'],
       ['6. 同一预测版本或库存日期的全部分片应作为同一批次提交。构建完成后装载.supply产物，不再在线全量重算；产物保存完整数据及计算结果，可回溯。'],
       [],
       ['工作表', '数据名称', '必填字段'],

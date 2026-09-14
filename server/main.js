@@ -104,6 +104,11 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/builds' && req.method === 'GET') return json(res, 200, { jobs: buildJobs.list(user.actor) });
     if (pathname === '/api/import/discard' && req.method === 'POST') { requireRole(user, 'admin'); return json(res, 200, buildJobs.discard((await body(req)).ids || [], user.actor)); }
     if (/^\/api\/jobs\/[^/]+\/cancel$/.test(pathname) && req.method === 'POST') return json(res, 200, buildJobs.cancel(pathname.split('/')[3], user.actor));
+    if (/^\/api\/jobs\/[^/]+\/issues$/.test(pathname) && req.method === 'GET') {
+      const filename = buildJobs.report(pathname.split('/')[3], user.actor, q.table || '');
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="import-issues.csv"', 'Cache-Control': 'no-store' });
+      const stream = fs.createReadStream(filename); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return;
+    }
     if (pathname.startsWith('/api/jobs/') && req.method === 'GET') {
       return json(res, 200, buildJobs.get(pathname.split('/').at(-1), user.actor));
     }
