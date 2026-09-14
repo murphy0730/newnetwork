@@ -73,6 +73,16 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await js("document.getElementById('clear').click()");
   await wait(() => js("window.__graphRev>"+revE+" && window.__testGraph.nodes.length==="+total), 'clear filters'); checks.push('clear restores full graph');
 
+  // 2c. 汇总表视图：全量编码表格、状态徽章、分页、行点击回图下钻
+  await js("document.querySelector('#seg-view [data-view=\"table\"]').click()");
+  await wait(() => js("!!document.querySelector('#tbl-body tbody tr')"), 'table view');
+  assert.ok(await js("document.querySelectorAll('#tbl-body tbody tr').length>0 && !!document.querySelector('#tbl-body .ins-status') && document.getElementById('pg-info').textContent.includes('页')")); checks.push('summary table view with status badges and pager');
+  const tblCode = await js("document.querySelector('#tbl-body [data-code]').dataset.code");
+  await js("document.querySelector('#tbl-body [data-code]').click()");
+  await wait(() => js("!!document.querySelector('#graph-container canvas') && window.__testGraph.nodes.some(n=>n.code===" + JSON.stringify(tblCode) + ")"), 'row drill'); checks.push('table row drills back to graph');
+  await js("document.getElementById('btn-showall').click()");
+  await wait(() => js("window.__testGraph.nodes.length==="+total), 'show all again');
+
   // Multi-code search: choose exact codes, remove chips, retain selections across refresh.
   await js("const input=document.getElementById('sc-search');input.value=window.__testGraph.nodes[0].code.slice(0,2);input.dispatchEvent(new Event('input',{bubbles:true}))");
   await wait(() => js("document.querySelectorAll('#code-options input').length>=2"), 'code candidates');
