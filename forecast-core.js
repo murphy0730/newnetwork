@@ -19,7 +19,7 @@
       id: field('id'), parent: field('父项', ['父项编码']), child: field('子项', ['子项编码']), qty: field('子项单位用量', ['配比数量'], 'number'),
       child_type: field('子项供应类型'), child_template: field('子项模板'), parent_type: field('父项供应类型'), parent_template: field('父项模板'), created_at: field('创建时间')
     } },
-    inventory: { label: '表4 · 库存快照', required: ['date', 'code', 'qty', 'sub_type'], fields: {
+    inventory: { label: '表4 · 库存快照', required: ['date', 'code', 'qty'], fields: {
       id: field('id'), date: field('创建日期', ['盘点时间', 'snapshot_time'], 'date'), code: field('编码'), qty: field('可用量', ['可用库存', 'onhand'], 'number'),
       sub_type: field('子库类型'), template: field('项目模板'), subinventory: field('ERP子库'), location_name: field('货位描述'), location: field('货位'),
       org_id: field('组织ID'), category: field('产品大类'), subcategory: field('产品小类'), family: field('产品族')
@@ -70,6 +70,13 @@
     if (!/^[+]?\d*\.?\d+(?:e[+-]?\d+)?$/i.test(s) || !Number.isFinite(n) || n < 0) throw Error('应为非负有限数值');
     return n;
   }
+  // 库存可用量允许负数：按减法计入月初库存
+  function numSigned(v, optional = false) {
+    if (text(v) === '') { if (optional) return null; throw Error('数量不能为空'); }
+    const s = text(v), n = Number(s);
+    if (!/^[+-]?\d*\.?\d+(?:e[+-]?\d+)?$/i.test(s) || !Number.isFinite(n)) throw Error('应为有限数值');
+    return n;
+  }
   function bool(v) { if (['是', '本产业', 'true', '1'].includes(text(v).toLowerCase())) return true; if (['否', '跨产业', 'false', '0'].includes(text(v).toLowerCase())) return false; throw Error('填写是/否'); }
   function headerMap(table, row) {
     const map = new Map(), fields = schemas[table].fields;
@@ -113,7 +120,8 @@
       for (const [key, ci] of map) {
         const f = schema.fields[key], v = cells[ci];
         try {
-          if (f.type === 'number' || f.type === 'optionalNumber') out[key] = num(v, f.type === 'optionalNumber');
+          if (table === 'inventory' && key === 'qty') out[key] = numSigned(v, false);
+          else if (f.type === 'number' || f.type === 'optionalNumber') out[key] = num(v, f.type === 'optionalNumber');
           else if (f.type === 'date' || f.type === 'month' || f.type === 'optionalDate') out[key] = text(v) === '' && !schema.required.includes(key) ? null : date(v, f.type === 'month', meta.date1904);
           else if (f.type === 'bool') out[key] = bool(v);
           else { if (typeof v === 'number' && (!Number.isSafeInteger(v) || Math.abs(v) >= 1e15)) throw Error('编码/ID精度不可靠，请在Excel中改为文本后重新导出'); out[key] = text(v); }
@@ -126,10 +134,15 @@
         if (out.direction === '使用' && out.purchase_code) fail(ri + 1, '外购编码', '使用行外购编码须为空');
         if (months.length) { for (const m of months) { try { rows.push({ ...out, month: m.h, qty: text(cells[m.i]) === '' ? 0 : num(cells[m.i]) }); } catch (e) { fail(ri + 1, m.h, e.message); } } } else rows.push(out);
       } else {
-        if (table === 'bom') { if (out.qty < 1) out.qty = Math.round((out.qty + Number.EPSILON) * 100) / 100; if (!(out.qty > 0)) fail(ri + 1, '子项单位用量', '用量按两位小数修约后必须大于0'); if (out.parent === out.child) fail(ri + 1, '父项/子项', '不允许自环'); }
+        let skip = false;
+        if (table === 'bom') {
+          if (out.parent === out.child) fail(ri + 1, '父项/子项', '不允许自环');
+          else if (out.qty < 0.01) skip = true; // 预处理自动过滤配比过小的父子项
+          else if (out.qty < 1) out.qty = Math.round((out.qty + Number.EPSILON) * 100) / 100;
+        }
         if (table === 'attributes' && out.sample_count != null && !Number.isInteger(out.sample_count)) fail(ri + 1, '周期样本量', '样本量须为整数');
         if (table === 'attributes' && out.sample_start && out.sample_end && out.sample_start > out.sample_end) fail(ri + 1, '统计日期', '开始日期不能晚于结束日期');
-        rows.push(out);
+        if (!skip) rows.push(out);
       }
     }
     if (!rows.length && !errors.length) fail(offset + 1, '数据', '没有数据行，未执行清空');
