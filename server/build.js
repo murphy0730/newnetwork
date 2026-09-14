@@ -48,7 +48,6 @@ async function run(spec, progress = () => {}) {
       next = { ...base, tables: { ...base.tables }, config: { ...base.config, ...body.config } };
       const c = next.config;
       if (!['net', 'raw'].includes(c.input_mode) || !Number.isFinite(c.cv_threshold) || c.cv_threshold < 0 || c.cv_threshold > 10 || !Number.isFinite(c.concentration) || c.concentration <= 0 || c.concentration > 1) throw fail('配置口径或阈值无效');
-      if (body.industry) next.tables.industry = normalized('industry', body.industry, issues);
     } else if (operation === 'maintain') {
       if (!['attributes', 'adjust'].includes(body.table)) throw fail('仅支持制造属性或调整表维护');
       const rows = normalized(body.table, body.rows, issues); next = { ...base, tables: { ...base.tables } };

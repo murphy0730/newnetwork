@@ -36,7 +36,7 @@ function filter(view, q, engine, input = view.rows) {
 }
 function dependencies(engine, root, month, mode, source) {
   const reachable = new Set([root]), queue = [root], amounts = new Map([[root, 1]]), out = [], demand = engine.net(root, month).demand;
-  const stop = c => c !== root && (mode === 'direct' || (mode === 'cross' && engine.local(c) !== true));
+  const stop = c => c !== root && (mode === 'direct' || (mode === 'cross' && !engine.sameIndustry(c, root)));
   for (let i = 0; i < queue.length; i++) if (!stop(queue[i])) for (const edge of engine.graph.children.get(queue[i]) || []) if (!reachable.has(edge.child)) { reachable.add(edge.child); queue.push(edge.child); }
   queue.sort((a, b) => engine.orderIndex.get(a) - engine.orderIndex.get(b));
   for (const code of queue) {

@@ -14,11 +14,11 @@ test('direct differs from top/cross: intermediate forecast stays independent', (
 test('multi-path quantities sum, no ancestor double counting; dynamic engine matches independently enumerated frontier', () => {
   let seed = 1024; const rand = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
   for (let run = 0; run < 20; run++) {
-    const s = C.empty(), m = '2026-09', version = '2026-08-24'; s.tables.industry = [{ make_dept: 'L', is_local: true }, { make_dept: 'X', is_local: false }];
+    const s = C.empty(), m = '2026-09', version = '2026-08-24';
     for (let i = 0; i < 18; i++) { const code = String(i); s.tables.attributes.push({ code, make_dept: rand() > .3 ? 'L' : 'X', lead_mean: i % 5 }); s.tables.forecast.push({ code, month: m, plan_date: version, qty: 100 + i, site_code: 'S' }); for (let j = i + 1; j < 18; j++) if (rand() < .15) s.tables.bom.push({ parent: code, child: String(j), qty: 0.5 + Math.floor(rand() * 3), id: `${i}-${j}` }); }
     const e = new C.Engine(s);
     for (const mode of ['direct', 'cross', 'top']) for (const code of e.graph.codes) {
-      const targets = new Map(); function walk(c, qty) { const parents = e.graph.parents.get(c); if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && e.local(c) !== true))) { targets.set(c, (targets.get(c) || 0) + qty); return; } for (const r of parents) walk(r.parent, qty * r.qty); } walk(code, 1);
+      const targets = new Map(); function walk(c, qty) { const parents = e.graph.parents.get(c); if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !e.sameIndustry(c, code)))) { targets.set(c, (targets.get(c) || 0) + qty); return; } for (const r of parents) walk(r.parent, qty * r.qty); } walk(code, 1);
       const expected = [...targets].reduce((sum, [c, q]) => sum + e.net(c, m).demand * q, 0); near(e.compute(m, mode).get(code).demand, expected); assert.deepEqual(new Map(e.relations(code, mode).map(r => [r.code, r.coeff])), targets);
     }
   }
@@ -52,7 +52,7 @@ test('instruction source excludes completed/cancelled work, not added to forecas
   const after = changesFor(s, { type: 'quality', source: 'mo', code: 'A', month: m, scrapQty: 100, delayDays: 10 }, v); assert.equal(new C.Engine(after).compute(m, 'cross', 'mo').get('A').supply, 0); assert.equal(after.tables.mo.find(r => r.mo_no === '1').qty, 300);
 });
 test('actual headers, multi-sheets, Excel dates, text IDs, CSV quotes, wide adjustments', () => {
-  const s = C.sample(), sheets = I.readFile('sample.xlsx', I.workbook(s)); assert.equal(sheets.length, 7); for (const x of sheets.filter(x => x.matrix.length > 1)) { assert.ok(x.detected); const p = C.parseMatrix(x.detected.table, x.matrix, { date1904: x.date1904 }); assert.deepEqual(p.errors, []); }
+  const s = C.sample(), sheets = I.readFile('sample.xlsx', I.workbook(s)); assert.equal(sheets.length, 6); for (const x of sheets.filter(x => x.matrix.length > 1)) { assert.ok(x.detected); const p = C.parseMatrix(x.detected.table, x.matrix, { date1904: x.date1904 }); assert.deepEqual(p.errors, []); }
   const matrix = [['父项', '子项', '子项单位用量'], ['00123', '00234', .555]]; assert.equal(C.detect(matrix).table, 'bom'); const parsed = C.parseMatrix('bom', matrix); assert.equal(parsed.rows[0].qty, .56); assert.equal(parsed.rows[0].parent, '00123');
   assert.equal(C.date(46280), '2026-09-15'); assert.equal(C.date('2026/9/15'), '2026-09-15'); assert.throws(() => C.date('2026-02-30')); assert.throws(() => C.num('NaN'));
   const csv = I.readFile('bom.csv', Buffer.from('\uFEFF父项,子项,子项单位用量\n"P,1",C,2')); assert.equal(csv[0].detected.table, 'bom'); assert.equal(csv[0].matrix[1][0], 'P,1');

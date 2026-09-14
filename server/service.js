@@ -160,6 +160,7 @@ class Service {
   }
   list(q, actor) {
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [] };
+    const span = int(q.span, 1, 1, 6), spanMonths = engine.months.slice(engine.months.indexOf(month), engine.months.indexOf(month) + span);
     const indexed = Query.view(engine, month, mode, source);
     let input = indexed.rows;
     if (q.role === 'demand' && q.code) {
@@ -171,7 +172,20 @@ class Service {
     const dashboard = Query.summarize(dimensioned, engine);
     const rows = Query.filter(indexed, q, engine, input);
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
-    return { trace, dashboard, total, offset, limit, months: engine.months, rows: rows.slice(offset, offset + limit).map(r => this.compact(r)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' };
+    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月滚动匹配；KPI卡片与筛选仍按起始月口径。` : '') };
+  }
+  // 汇总表行：单月直接输出；多月（最多6个月）按累计供需 + 库存滚动水位聚合，并识别跨产业首个编码及其产业
+  summaryRow(engine, r, month, span, spanMonths, mode, source) {
+    const base = this.compact(r), cross = engine.relations(r.code, 'cross').filter(x => x.kind === '跨产业首个编码').map(x => ({ code: x.code, make_dept: engine.attributes.get(x.code)?.make_dept || '' }));
+    base.cross = cross.slice(0, 50); base.crossCount = cross.length;
+    if (span <= 1) return base;
+    const rows = spanMonths.map(m => engine.row(r.code, m, mode, source));
+    const complete = rows.length === span && rows.every(x => x.complete); // 剩余月份不足所选月份数时按数据不完整处理
+    const supply = complete ? rows.reduce((s, x) => s + x.supply, 0) : null, demand = complete ? rows.reduce((s, x) => s + x.demand, 0) : null;
+    const inventory = rows[0].inventory;
+    let water = inventory, firstShortage = null;
+    for (let i = 0; i < rows.length; i++) { const x = rows[i]; if (water == null || !x.complete) { water = null; continue; } water += x.supply - x.demand; if (water < -C.EPS && !firstShortage) firstShortage = spanMonths[i]; }
+    return { ...base, complete, supply, demand, gap: complete && engine.graph.parents.get(r.code).length ? demand - supply : null, inventory, coverageGap: complete && inventory != null ? demand - supply - inventory : null, firstShortage, risks: [...new Set(rows.flatMap(x => x.risks))], monthly: rows.map((x, i) => ({ month: spanMonths[i], supply: x.supply, demand: x.demand, gap: x.gap, complete: x.complete })) };
   }
   compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '', category: r.attr.part_category || '', supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
   insights(q, actor) { return require('./insights')(this, q, actor); }
@@ -216,7 +230,7 @@ class Service {
       const rs = raw ? e.graph.parents.get(code).map(r => ({ code: r.parent, coeff: r.qty, kind: 'BOM' })) : e.relations(code, mode);
       for (const r of rs) if (visible.has(r.code)) links.push({ source: r.code, target: code, qty: r.coeff, kind: r.kind, critical: criticalEdges.has(JSON.stringify([r.code, code])), risk: riskEdges.has(JSON.stringify([r.code, code])) });
     }
-    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), matched: matches.has(code), local: e.local(code) ?? null })), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
+    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), matched: matches.has(code) })), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
   }
   report(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), indexed = Query.view(e, month, mode, source), rows = indexed.rows, sites = new Map();
@@ -285,7 +299,6 @@ class Service {
   config(body, actor) {
     const base = this.state(), s = { ...base, tables: { ...base.tables }, config: { ...base.config } }; if (body.baseRevision !== s.revision) throw error('配置已过期，请重新加载', 409);
     s.config = { ...s.config, ...body.config }; checkConfig(s.config);
-    if (body.industry) { const p = Importer.publicRows('industry', body.industry); if (p.errors.length) throw error('产业映射无效', 422, p.errors); s.tables.industry = p.rows; }
     const v = C.validate(s); if (v.errors.length) throw error('配置导致数据校验失败', 422, v.errors);
     return this.publish(s, body.baseRevision, actor, 'config');
   }

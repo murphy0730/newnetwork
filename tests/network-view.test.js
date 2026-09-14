@@ -5,7 +5,6 @@ const C = require('../forecast-core'), { Service } = require('../server/service'
 
 test('complete graph exceeds legacy node/edge caps; multi-select filters preserve demand and category cache isolation', () => {
   const data = C.empty(), sample = C.sample();
-  data.tables.industry = [{ make_dept: 'D', is_local: true }];
   for (let l = 0; l < 7; l++) for (let i = 0; i < 200; i++) {
     const code = `L${l}-${i}`;
     data.tables.forecast.push({ ...sample.tables.forecast[0], code, qty: 100, site_code: 'S' + (i % 3), site_name: 'Site' + (i % 3) });

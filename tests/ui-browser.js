@@ -89,7 +89,7 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   // 2c. 汇总表视图：全量编码表格、状态徽章、分页、行点击回图下钻
   await js("document.querySelector('#seg-view [data-view=\"table\"]').click()");
   await wait(() => js("!!document.querySelector('#tbl-body tbody tr')"), 'table view');
-  assert.ok(await js("document.querySelectorAll('#tbl-body tbody tr').length>0 && !!document.querySelector('#tbl-body .ins-status') && document.getElementById('pg-info').textContent.includes('页')")); checks.push('summary table view with status badges and pager');
+  assert.ok(await js("document.querySelectorAll('#tbl-body tbody tr').length>0 && !!document.querySelector('#tbl-body .ins-status') && document.getElementById('pg-total').textContent.includes('页') && document.getElementById('pg-total').textContent.includes('共') && !!document.getElementById('pg-jump') && !!document.getElementById('tbl-span')")); checks.push('summary table view with status badges, total count and page jump');
   const tblCode = await js("document.querySelector('#tbl-body [data-code]').dataset.code");
   await js("document.querySelector('#tbl-body [data-code]').click()");
   await wait(() => js("!!document.querySelector('#graph-container canvas') && window.__testGraph.nodes.some(n=>n.code===" + JSON.stringify(tblCode) + ")"), 'row drill'); checks.push('table row drills back to graph');

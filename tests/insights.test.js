@@ -65,7 +65,7 @@ test('insight top-ten contributors never change full demand and unknown months r
     data.tables.attributes.push({ code, make_dept: 'D', lead_mean: 2, lead_cv: .1 });
     for (const month of ['2026-09', '2026-11']) data.tables.forecast.push({ code, plan_date: '2026-09-01', month, qty: 1, site_code: 'S' });
   }
-  data.tables.attributes.push({ code: 'LOW', make_dept: 'D', lead_mean: 2, lead_cv: .1 }); data.tables.industry.push({ make_dept: 'D', is_local: false });
+  data.tables.attributes.push({ code: 'LOW', make_dept: 'D', lead_mean: 2, lead_cv: .1 });
   for (const month of ['2026-09', '2026-11']) data.tables.forecast.push({ code: 'LOW', plan_date: '2026-09-01', month, qty: 10, site_code: 'S' });
   const s = setup(data); try { const r = s.insights({ code: 'LOW', month: '2026-09', span: 4 }, 'test'); assert.equal(r.demandContributors.total, 12); assert.equal(r.demandContributors.rows.length, 10); assert.equal(r.demandContributors.knownContribution, 12); assert.equal(r.demandContributors.truncated, true); assert.equal(r.horizon.complete, false); const missing = r.facts.find(f => f.id === 'horizon_unknown'); assert.deepEqual(missing.evidence.incompleteMonths, ['2026-10']); assert.equal(missing.evidence.beyondAvailableMonths, 1); } finally { s.store.close(); }
 });

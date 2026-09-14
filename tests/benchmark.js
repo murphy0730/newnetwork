@@ -3,7 +3,6 @@ const { performance } = require('node:perf_hooks'), fs = require('node:fs'), pat
 const C = require('../forecast-core');
 function generate(size = 30000, months = 11) {
   const s = C.empty(); s.kind = 'benchmark'; const width = Math.ceil(size / 10);
-  s.tables.industry = [{ make_dept: '本产业', is_local: true }, { make_dept: '上层产业', is_local: false }];
   for (let i = 0; i < size; i++) { const code = `P${String(i).padStart(5, '0')}`, layer = Math.floor(i / width); s.tables.attributes.push({ code, make_dept: layer % 3 ? '本产业' : '上层产业', lead_mean: 2 + i % 12, lead_cv: .1 + (i % 5) / 10, sample_count: 30 });
     for (let m = 0; m < months; m++) s.tables.forecast.push({ code, plan_date: '2026-08-24', month: C.addMonth('2026-09', m), qty: 1000 + i % 500, site_code: `S${i % 300}`, site_name: `加工地${i % 300}` });
     s.tables.inventory.push({ id: code, code, date: '2026-09-01', qty: i % 100, sub_type: '正常库存' });

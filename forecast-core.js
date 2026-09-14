@@ -39,9 +39,6 @@
       mo_no: field('任务令号', ['生产指令号']), code: field('编码'), qty: field('计划产出数量', ['数量'], 'number'),
       due_date: field('计划完工日期', [], 'date'), sched_date: field('排产预计产出时间', [], 'optionalDate'), actual_date: field('实际完工日期', [], 'optionalDate'),
       site_code: field('加工地代码', ['加工地']), site_name: field('加工地名称'), status: field('排产状态'), planned_date: field('计划产出日期', [], 'optionalDate')
-    } },
-    industry: { label: '本产业映射', required: ['make_dept', 'is_local'], fields: {
-      make_dept: field('制造部门', ['make_dept']), is_local: field('是否本产业', [], 'bool')
     } }
   };
   const defaults = { input_mode: 'net', cv_threshold: 0.3, concentration: 0.8 };
@@ -168,7 +165,6 @@
       for (const r of t[key]) {
         let id;
         if (key === 'attributes') id = r.code;
-        if (key === 'industry') id = r.make_dept;
         if (key === 'mo') id = r.mo_no;
         if (key === 'adjust') id = JSON.stringify([r.direction, r.code, r.purchase_code || '', r.month]);
         if (key === 'bom') id = r.id ? 'id:' + r.id : JSON.stringify([r.parent, r.child]);
@@ -178,13 +174,13 @@
     }
     let graph;
     try { graph = topology(t); } catch (e) { errors.push({ field: 'BOM', message: e.message }); }
-    const attr = new Map(t.attributes.map(r => [r.code, r])), mapped = new Set(t.industry.map(r => r.make_dept));
+    const attr = new Map(t.attributes.map(r => [r.code, r]));
     if (graph) {
       const missing = graph.codes.filter(c => !attr.has(c));
       if (missing.length) warnings.push(`${missing.length}个编码缺制造属性（${missing.slice(0, 6).join('、')}），产业/周期分析不完整`);
     }
-    const depts = [...new Set(t.attributes.map(r => r.make_dept))].filter(d => d && !mapped.has(d));
-    if (depts.length) warnings.push(`请确认产业映射：${depts.join('、')}`);
+    const noDept = t.attributes.filter(r => !r.make_dept).length;
+    if (noDept) warnings.push(`${noDept}个编码未维护制造部门(make_dept)，跨产业识别标记为产业未确认`);
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && !r.site_name)) warnings.push('部分正数量预测缺加工地，相关单一加工地判定为数据不完整');
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && r.site_name)) warnings.push('部分加工地只有名称，将按名称临时识别；建议补加工地代码');
     if (!t.inventory.length) warnings.push('尚无库存快照，仅能计算预测匹配；库存覆盖结果显示未知');
@@ -223,7 +219,7 @@
   class Engine {
     constructor(snapshot, planDate, sharedGraph) {
       this.snapshot = snapshot; this.t = snapshot.tables; this.cfg = { ...defaults, ...snapshot.config };
-      this.graph = sharedGraph || topology(this.t); this.attributes = new Map(this.t.attributes.map(r => [r.code, r])); this.industries = new Map(this.t.industry.map(r => [r.make_dept, r.is_local]));
+      this.graph = sharedGraph || topology(this.t); this.attributes = new Map(this.t.attributes.map(r => [r.code, r]));
       this.orderIndex = new Map(this.graph.order.map((c, i) => [c, i]));
       this.versions = [...new Set(this.t.forecast.map(r => r.plan_date))].sort(); this.version = planDate || this.versions.at(-1);
       this.forecast = this.t.forecast.filter(r => r.plan_date === this.version); this.byCodeMonth = new Map(); this.byCode = new Map();
@@ -249,7 +245,9 @@
         this.criticalCache.set(c, { path: [c, ...(best?.path || [])], knownDays: (mean || 0) + (best?.knownDays || 0), days: complete ? (mean || 0) + (best?.knownDays || 0) : null, complete });
       }
     }
-    local(code) { const a = this.attributes.get(code); return a ? this.industries.get(a.make_dept) : undefined; }
+    // 产业直接按表6制造属性维护基表的 make_dept 区分：每个制造部门即一个产业，不再使用合并映射
+    dept(code) { const a = this.attributes.get(code); return a && a.make_dept ? a.make_dept : undefined; }
+    sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {
       if (!this.netCache.has(month)) { if (this.netCache.size >= 2) this.netCache.delete(this.netCache.keys().next().value); this.netCache.set(month, new Map()); }
       const cache = this.netCache.get(month), key = JSON.stringify([code, month]); if (cache.has(code)) return cache.get(code);
@@ -263,16 +261,17 @@
       const amounts = new Map([[code, 1]]), targets = new Map(), reachable = new Set([code]), queue = [code];
       for (let i = 0; i < queue.length; i++) {
         const c = queue[i], parents = this.graph.parents.get(c) || [];
-        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && this.local(c) !== true))) continue;
+        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)))) continue;
         for (const r of parents) if (!reachable.has(r.parent)) { reachable.add(r.parent); queue.push(r.parent); }
       }
       // Reverse topological propagation sums converging path coefficients without enumerating paths.
       for (const c of [...reachable].sort((a, b) => this.orderIndex.get(b) - this.orderIndex.get(a))) {
         if (!amounts.has(c)) continue;
-        const parents = this.graph.parents.get(c), local = this.local(c);
-        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && local !== true))) {
+        const parents = this.graph.parents.get(c);
+        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)))) {
           const qty = amounts.get(c); if (!Number.isFinite(qty)) throw Error('BOM累计用量超出计算范围');
-          targets.set(c, { code: c, coeff: qty, kind: mode === 'cross' ? local === true ? '本产业最顶层' : local === false ? '跨产业首个编码' : '产业未确认' : mode === 'top' ? '最顶层' : '直接父项' }); continue;
+          const kind = mode === 'cross' ? (this.dept(c) == null || this.dept(code) == null) ? '产业未确认' : this.sameIndustry(c, code) ? '本产业最顶层' : '跨产业首个编码' : mode === 'top' ? '最顶层' : '直接父项';
+          targets.set(c, { code: c, coeff: qty, kind }); continue;
         }
         for (const r of parents) amounts.set(r.parent, (amounts.get(r.parent) || 0) + amounts.get(c) * r.qty);
       }
@@ -302,10 +301,13 @@
         if (attr.lead_mean == null) risks.push('加工周期未维护');
         result.set(code, { code, attr, ...own, complete, demand, knownDemand, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
         if (saved) continue;
-        const boundary = mode === 'direct' || !this.graph.parents.get(code).length || (mode === 'cross' && this.local(code) !== true);
-        const outgoing = boundary ? (net.demand || 0) : knownDemand;
-        const outgoingKnown = boundary ? net.known && (mode !== 'cross' || this.local(code) !== undefined) : incomingKnown.get(code) !== false;
+        // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项（子项仅下达自身预测）
+        const noParents = !this.graph.parents.get(code).length;
         for (const edge of this.graph.children.get(code)) {
+          const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
+          const originate = mode === 'direct' || crossEdge || noParents;
+          const outgoing = originate ? (net.demand || 0) : knownDemand;
+          const outgoingKnown = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : incomingKnown.get(code) !== false;
           const val = (incoming.get(edge.child) || 0) + outgoing * edge.qty;
           if (!Number.isFinite(val)) throw Error('BOM累计需求超出计算范围'); incoming.set(edge.child, val);
           if (!outgoingKnown) incomingKnown.set(edge.child, false);
@@ -329,7 +331,7 @@
       const all = this.compute(month, mode), amounts = new Map([[root, 1]]), out = [];
       for (const c of this.graph.order) if (amounts.has(c)) {
         if (c !== root) out.push({ ...all.get(c), contribution: this.net(root, month).demand == null ? null : this.net(root, month).demand * amounts.get(c), coeff: amounts.get(c) });
-        if (c !== root && (mode === 'direct' || (mode === 'cross' && this.local(c) !== true))) continue;
+        if (c !== root && (mode === 'direct' || (mode === 'cross' && !this.sameIndustry(c, root)))) continue;
         // Inspect dependency risk even when the selected material is not a frontier object.
         // Its own folded quantity is a reference, not an allocation of the lower material's gap.
         for (const r of this.graph.children.get(c)) amounts.set(r.child, (amounts.get(r.child) || 0) + amounts.get(c) * r.qty);
@@ -355,7 +357,6 @@
   }
   function sample() {
     const s = empty(), m = today().slice(0, 7), t = s.tables; s.kind = 'sample'; s.updated_at = new Date().toISOString();
-    t.industry = [{ make_dept: '基础制造部', is_local: true }, { make_dept: '整机事业部', is_local: false }];
     t.attributes = [ ['A', '共用模块', '基础制造部', 10, .4], ['B', '整机B', '整机事业部', 8, .12], ['C', '整机C', '整机事业部', 6, .15], ['D', '模块原料', '基础制造部', 15, .08] ].map(([code, name, make_dept, lead_mean, lead_cv]) => ({ code, name, make_dept, lead_mean, lead_cv, sample_count: 30, source: '示例维护' }));
     t.bom = [{ id: '1', parent: 'B', child: 'A', qty: 2 }, { id: '2', parent: 'C', child: 'A', qty: 1 }, { id: '3', parent: 'A', child: 'D', qty: .5 }];
     for (let i = 0; i < 11; i++) {
@@ -380,7 +381,7 @@
     const GRP0 = { FG: 100, MD: 350, PT: 600, SB: 800, RW: 1000, BS: 1000, RM: 700, EX: 450 };
     const GRP = Object.fromEntries(Object.entries(GRP0).map(([g, n]) => [g, Math.max(2, Math.round(n * scale))]));
     const LEVEL = ['FG', 'MD', 'PT', 'SB', 'RW', 'BS', 'RM']; // 逐层父子
-    // 12 个本产业制造部门（同一大类按编码奇偶分到两个部门）＋3 个跨产业外协厂
+    // 12 个制造部门（同一大类按编码奇偶分到两个部门）＋3 个外协厂；产业直接按 make_dept 区分
     const DEPT = { FG: ['整机事业部', '总装测试部'], MD: ['模组制造部', '电子装联部'], PT: ['部件加工部', '注塑成型部'], SB: ['精密结构件厂', '钣金加工部'], RW: ['基础材料厂', '表面处理部'], BS: ['深加工厂', '热处理部'], RM: ['原料厂'] };
     const EX_DEPT = ['芯片外协厂', '连接器外协厂', '五金外协厂'];
     const NM = { FG: '整机', MD: '模组', PT: '部件', SB: '结构件', RW: '基础料', BS: '深基础料', RM: '原料', EX: '外购件' };
@@ -391,9 +392,6 @@
     const SITES = {}; { let si = 0; for (const g of Object.keys(SITE_COUNT)) { SITES[g] = []; for (let i = 0; i < SITE_COUNT[g]; i++) { si++; SITES[g].push({ code: 'S' + String(si).padStart(3, '0'), name: REGION[si % REGION.length] + NM[g] + '加工地' }); } } }
     // 约 400 个产品大类
     const CAT = []; for (let i = 1; i <= 400; i++) CAT.push('C' + String(i).padStart(3, '0') + '类');
-    t.industry = [];
-    for (const g of Object.keys(DEPT)) for (const d of DEPT[g]) t.industry.push({ make_dept: d, is_local: true });
-    for (const d of EX_DEPT) t.industry.push({ make_dept: d, is_local: false });
     const by = {}, all = [];
     for (const g of Object.keys(GRP)) { by[g] = []; for (let i = 1; i <= GRP[g]; i++) { const c = code(g, i); by[g].push(c); all.push(c); } }
     const GRP_OFF = { FG: 0, MD: 37, PT: 71, SB: 113, RW: 151, BS: 199, RM: 241, EX: 283 };

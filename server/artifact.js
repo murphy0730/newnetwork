@@ -20,7 +20,7 @@ function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], 
   progress({ phase: 'graph', message: '建立BOM图及周期路径', percent: 35 });
   const graph = C.topology(snapshot.tables), versions = [...new Set(snapshot.tables.forecast.map(r => r.plan_date))].sort();
   const counts = Object.fromEntries(Object.entries(snapshot.tables).map(([k, rows]) => [k, rows.length]));
-  const manifest = { format: FORMAT, algorithm, buildId: randomUUID(), builtAt: new Date().toISOString(), kind: snapshot.kind, config: snapshot.config, counts, versions, monthsByVersion: {}, statsByVersion: {}, codes: graph.codes.length, edges: snapshot.tables.bom.length, levels: maximumLevel(graph), warnings: validation.warnings, sources, summaries: [], sites: [], industry: snapshot.tables.industry, tableJsonCharacters: 0, maxChunkBytes: 0 };
+  const manifest = { format: FORMAT, algorithm, buildId: randomUUID(), builtAt: new Date().toISOString(), kind: snapshot.kind, config: snapshot.config, counts, versions, monthsByVersion: {}, statsByVersion: {}, codes: graph.codes.length, edges: snapshot.tables.bom.length, levels: maximumLevel(graph), warnings: validation.warnings, sources, summaries: [], sites: [], tableJsonCharacters: 0, maxChunkBytes: 0 };
   const sites = new Map();
   for (const r of snapshot.tables.forecast) if (r.site_code || r.site_name) { const code = r.site_code || '名称:' + r.site_name; sites.set(code, { code, name: r.site_name || r.site_code }); }
   manifest.sites = [...sites.values()];

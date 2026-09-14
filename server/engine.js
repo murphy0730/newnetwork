@@ -8,7 +8,7 @@ class Engine extends C.Engine {
     const e = Object.create(Engine.prototype), m = artifact.manifest, saved = artifact.graph(snapshot);
     Object.assign(e, { snapshot, t: snapshot.tables, cfg: { ...C.defaults, ...snapshot.config }, graph: saved.graph, criticalCache: saved.critical, versions: m.versions, version: version || m.versions.at(-1), sealed: true });
     e.months = m.monthsByVersion[e.version] || [];
-    e.attributes = new Map(e.t.attributes.map(r => [r.code, r])); e.industries = new Map(e.t.industry.map(r => [r.make_dept, r.is_local]));
+    e.attributes = new Map(e.t.attributes.map(r => [r.code, r]));
     e.orderIndex = new Map(e.graph.order.map((code, i) => [code, i]));
     e.forecast = []; e.byCodeMonth = new Map(); e.byCode = new Map();
     for (const r of e.t.forecast) if (r.plan_date === e.version) { e.forecast.push(r); const key = JSON.stringify([r.code, r.month]); if (!e.byCodeMonth.has(key)) e.byCodeMonth.set(key, []); e.byCodeMonth.get(key).push(r); if (!e.byCode.has(r.code)) e.byCode.set(r.code, []); e.byCode.get(r.code).push(r); }
@@ -33,10 +33,13 @@ class Engine extends C.Engine {
       const code = this.graph.order[i], net = this.net(code, month);
       const supplyKnown = source === 'mo' ? this.t.mo.length > 0 : net.known;
       numeric[i * 2 + 1] = Number(supplyKnown && !unknown[i]);
-      const boundary = mode === 'direct' || !this.graph.parents.get(code).length || (mode === 'cross' && this.local(code) !== true);
-      const outgoing = boundary ? (net.demand || 0) : numeric[i * 2];
-      const known = boundary ? net.known && (mode !== 'cross' || this.local(code) !== undefined) : !unknown[i];
+      // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项
+      const noParents = !this.graph.parents.get(code).length;
       for (const edge of this.graph.children.get(code)) {
+        const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
+        const originate = mode === 'direct' || crossEdge || noParents;
+        const outgoing = originate ? (net.demand || 0) : numeric[i * 2];
+        const known = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : !unknown[i];
         const j = this.orderIndex.get(edge.child), value = numeric[j * 2] + outgoing * edge.qty;
         if (!Number.isFinite(value)) throw Error('BOM累计需求超出计算范围');
         numeric[j * 2] = value;

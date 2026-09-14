@@ -24,10 +24,8 @@ class Issues {
 function scopeIssues(t, issues) {
   const depts = new Set((t.attributes || []).filter(r => r.make_dept).map(r => r.code));
   const range = new Set(t.forecast.filter(r => depts.has(r.code)).map(r => r.code));
-  const mapped = new Set(t.industry.map(r => r.make_dept));
   for (const r of t.attributes) {
     if (!r.make_dept) issues.record('attributes', r, 'make_dept', '制造部门为空，无法确认编码所属产业', depts.size ? '保留属性记录；关联预测、库存和BOM按编码范围规则过滤' : '保留记录；全部制造部门缺失，现有编码范围预处理跳过');
-    else if (!mapped.has(r.make_dept)) issues.record('attributes', r, 'make_dept', '制造部门未维护产业映射', '保留记录；产业口径显示不完整');
     if (r.lead_mean == null) issues.record('attributes', r, 'lead_mean', '未维护加工周期均值', '保留记录；关键路径周期显示未知');
   }
   for (const r of t.forecast) if (r.qty > 0 && !r.site_code) issues.record('forecast', r, 'site_code', r.site_name ? '仅维护加工地名称，缺少加工地代码' : '正数量预测缺少加工地', '保留范围内记录；加工地分析按现有缺失规则处理');
