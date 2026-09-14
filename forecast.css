@@ -9,6 +9,7 @@
 .gs-range-val{font-family:var(--font-num);font-size:11px;color:var(--ink-2);min-width:34px;text-align:right}
 /* 凸包聚类边框 overlay 需要容器定位 */
 #graph-container{position:relative}
+.graph-empty{position:absolute;inset:40% 15% auto;text-align:center;color:var(--ink-3);line-height:1.8;pointer-events:none;z-index:5}
 .fc-picker{border:1px solid #38527b;border-radius:7px;background:#0a1324;padding:8px}
 .fc-picker summary{cursor:pointer;color:var(--ink);min-height:24px;line-height:24px}
 .fc-picker fieldset{border:0;padding:0;margin:8px 0;max-height:220px;overflow:auto}

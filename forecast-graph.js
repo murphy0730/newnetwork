@@ -101,7 +101,6 @@
       this.edgeOpacity = 0.8;        // 连线透明度，设置面板可调
       this.showRatio = false;        // 边上是否展示配比关系（×数量）
       this.chainCode = '';           // 单击选中的链路中心节点
-      this._hover = null;
       this.ready = false;
       this.graph = null;
       this._renderQueue = Promise.resolve();
@@ -193,7 +192,7 @@
         }
         this.chainCode = id;
         this.selected = id;
-        this._applyStates(this._hover === id ? id : null);
+        this._applyStates();
         this.onNodeClick(id, n);
       });
       this.graph.on('node:dblclick', (evt) => {
@@ -205,14 +204,6 @@
         this.chainCode = '';
         this._applyStates();
         this.onCanvasClick();
-      });
-      this.graph.on('node:pointerenter', (evt) => {
-        this._hover = evt.target.id;
-        this._applyStates(this._hover);
-      });
-      this.graph.on('node:pointerleave', () => {
-        this._hover = null;
-        this._applyStates();
       });
       this.ready = true;
     }
@@ -410,23 +401,16 @@
       return this.graph.setElementState(states);
     }
 
-    // 统一计算节点/边状态：关键路径或风险路径高亮 > 单击链路 > 悬浮邻居
-    _applyStates(hoverId) {
+    // 统一计算节点/边状态：关键路径或风险路径高亮 > 单击链路
+    _applyStates() {
       if (this.highlight) {
-        const p = this._applyHighlight();
-        return hoverId ? p.then(() => this.graph && this.graph.setElementState({ [hoverId]: ['active'] })) : p;
+        return this._applyHighlight();
       }
       let focus = null;
       if (this.chainCode) focus = this._chain(this.chainCode);
-      if (hoverId) {
-        const adj = this._adjacency(hoverId);
-        if (focus) { adj.nodes.forEach(x => focus.nodes.add(x)); adj.edges.forEach(x => focus.edges.add(x)); }
-        else focus = adj;
-      }
       const states = {};
       for (const n of this.nodes) states[n.code] = focus && !focus.nodes.has(n.code) ? ['dim'] : [];
       this.edges.forEach((e, i) => { states['__e' + i] = focus ? (focus.edges.has('__e' + i) ? ['active'] : ['dim']) : []; });
-      if (hoverId) states[hoverId] = ['active'];
       if (this.selected && states[this.selected] && !states[this.selected].includes('dim')) states[this.selected] = [...states[this.selected], 'selected'];
       return this.graph.setElementState(states);
     }
@@ -449,7 +433,6 @@
         }
       });
       this.chainCode = '';
-      this._hover = null;
       this._presetMap = null;
       return this.render();
     }

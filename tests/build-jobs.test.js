@@ -9,7 +9,7 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
 
 test('online builds release failed uploads, preserve baseline, reject stale activation and survive restart', { timeout: 120000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'supply-build-http-')), dbPath = path.join(dir, 'catalog.sqlite'), port = 8798, base = 'http://127.0.0.1:' + port;
-  let child;
+  let child, failedId;
   function start() { child = spawn(process.execPath, ['server/main.js'], { cwd: path.resolve(__dirname, '..'), windowsHide: true, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DB_PATH: dbPath, API_ADMIN_TOKEN: '', API_PLANNER_TOKEN: '', API_VIEWER_TOKEN: '' } }); }
   async function stop() { const done = new Promise(r => child.once('exit', r)); child.kill(); await done; }
   async function request(url, body) { const r = await fetch(base + url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const value = await r.json(); assert.ok(r.ok, JSON.stringify(value)); return value; }
@@ -27,6 +27,11 @@ test('online builds release failed uploads, preserve baseline, reject stale acti
       const file = await upload(header + '2026-09-10,RETRY,2026-09,invalid,S1\n');
       const failed = await poll(await request('/api/import/preview', previewBody(file, 1)), false);
       assert.equal(failed.error.details[0].row, 2); assert.equal((await request('/api/meta')).revision, 1);
+      const report = await fetch(base + '/api/jobs/' + failed.id + '/issues?table=forecast');
+      assert.equal(report.status, 200); assert.ok((await report.text()).includes('RETRY'));
+      assert.ok(failed.issues.total > 0);
+      failedId = failed.id;
+      assert.equal((await fetch(base + '/api/jobs/' + failed.id + '/issues?table=__proto__')).status, 400);
       await pause(50); assert.deepEqual(fs.readdirSync(dbPath + '.tasks/uploads'), []);
       assert.deepEqual(fs.readdirSync(path.join(dir, 'catalog.sqlite.builds')).filter(f => f.includes('partial')), []);
     }
@@ -36,6 +41,7 @@ test('online builds release failed uploads, preserve baseline, reject stale acti
     const preview = await poll(buildTask);
     assert.equal((await request(buildTask.poll)).canActivate, true);
     await stop(); start(); await ready();
+    assert.ok((await (await fetch(base + '/api/jobs/' + failedId + '/issues')).text()).includes('RETRY'));
     assert.ok((await request('/api/builds')).jobs.some(j => j.id === buildTask.jobId && j.result.previewId === preview.previewId));
     const activation = await request('/api/import/commit', { previewId: preview.previewId });
     assert.equal((await request('/api/import/commit', { previewId: preview.previewId })).jobId, activation.jobId);
@@ -66,5 +72,12 @@ test('cancel and restart cleanup remove temporary outputs but never published hi
     const partial = path.join(store.artifactDir, 'interrupted.supply'); fs.writeFileSync(partial, 'not published');
     const id = randomUUID(); jobs.write(jobs.file('jobs', id), { id, actor: 'test', kind: 'build', status: 'running', resources: [], outputs: [partial, published], created_at: new Date().toISOString() });
     const restarted = new BuildJobs(store, () => {}); assert.equal(restarted.get(id, 'test').status, 'failed'); assert.equal(fs.existsSync(partial), false); assert.equal(fs.existsSync(published), true);
+    const report = path.join(jobs.root, 'reports', id + '.csv'); fs.writeFileSync(report, 'private report');
+    assert.throws(() => restarted.report(id, 'test'), /未完成问题扫描/);
+    restarted.jobs.get(id).issues = { total: 1 };
+    assert.throws(() => restarted.report(id, 'other-actor'), /无权访问/);
+    assert.equal(restarted.report(id, 'test'), report);
+    restarted.jobs.get(id).updated_at = '2020-01-01T00:00:00Z'; restarted.sweep();
+    assert.equal(fs.existsSync(report), false);
   } finally { jobs.shutdown(); store.close(); }
 });

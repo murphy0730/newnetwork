@@ -9,6 +9,15 @@ const chromePath = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Ap
 const env = { ...process.env, PORT: String(appPort), HOST: '127.0.0.1', DB_PATH: path.join(out, `ui-${suffix}.sqlite`), IMPORT_DIR: path.join(out, `ui-import-${suffix}`), API_ADMIN_TOKEN: '', API_PLANNER_TOKEN: '', API_VIEWER_TOKEN: '' };
 fs.mkdirSync(path.join(out, `ui-import-${suffix}`), { recursive: true });
 fs.writeFileSync(path.join(out, `ui-import-${suffix}`, 'folder-test.csv'), '计划日期,编码,预测月份,预测数量,加工地代码\n2026-11-10,FG-01,2026-11,300,S001\n');
+fs.writeFileSync(path.join(out, `ui-import-${suffix}`, 'attributes.csv'), 'part_no,make_dept\nFG-01,\n');
+// Fixed interaction fixture with explicit isolated codes (no business database writes).
+const fixtureData = require('../forecast-core').sampleLarge(Number(process.env.UI_SCALE || 0.1));
+for (const code of ['ISOLATED-TEST-1', 'ISOLATED-TEST-2']) {
+  fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code });
+  fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code });
+}
+const fixtureService = new (require('../server/service').Service)(env.DB_PATH);
+fixtureService.publish(fixtureData, 0, 'local', 'sample'); fixtureService.store.close();
 const app = spawn(process.execPath, ['server/main.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = ''; app.stdout.on('data', b => logs += b); app.stderr.on('data', b => logs += b);
 let chrome, ws, nextId = 1; const pending = new Map(), errors = [], checks = [];
@@ -19,8 +28,6 @@ async function js(expression) { const r = await cdp('Runtime.evaluate', { expres
 async function click(selector) { await wait(() => js(`!!document.querySelector(${JSON.stringify(selector)})`), selector); await js(`document.querySelector(${JSON.stringify(selector)}).click()`); }
 (async () => {
   await wait(async () => (await fetch('http://127.0.0.1:' + appPort + '/api/health')).ok, 'server');
-  const initial = await (await fetch('http://127.0.0.1:' + appPort + '/api/sample-large', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseRevision: 0 }) })).json();
-  await wait(async () => (await (await fetch('http://127.0.0.1:' + appPort + '/api/jobs/' + initial.jobId)).json()).status === 'completed', 'sample', 120000);
   chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=' + debugPort, '--user-data-dir=' + path.join(out, 'ui-chrome-' + suffix), 'about:blank'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   chrome.stderr.on('data', b => logs += b);
   let targets; await wait(async () => { targets = await (await fetch('http://127.0.0.1:' + debugPort + '/json/list')).json(); return targets.some(t => t.type === 'page'); }, 'Chrome');
@@ -31,6 +38,12 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await cdp('Page.navigate', { url: 'http://127.0.0.1:' + appPort + '/' });
   await wait(() => js("!!window.__testGraph?.nodes.length && !!document.querySelector('#graph-container canvas')"), 'overview');
   await js('window.__testGraph._renderQueue');
+  assert.ok(await js("document.getElementById('gs-hide-isolated').checked"));
+  assert.ok(await js("!window.__testGraph.nodes.some(n=>n.code.startsWith('ISOLATED-TEST-'))"));
+  assert.ok(await js("document.getElementById('g-count').textContent.includes('已隐藏')")); checks.push('over 100 codes automatically hides isolated nodes with an explicit count');
+  await js("const box=document.getElementById('gs-hide-isolated');box.checked=false;box.dispatchEvent(new Event('change',{bubbles:true}))");
+  await js('window.__testGraph._renderQueue');
+  assert.ok(await js("window.__testGraph.nodes.some(n=>n.code==='ISOLATED-TEST-1')")); checks.push('setting restores isolated codes without another graph request');
   const total = await js('window.__testGraph.nodes.length');
   const N0 = await js('window.__testGraph.nodes[0].code');
 
@@ -103,7 +116,7 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
 
   // 3. 悬浮高亮相邻链路
   await js("window.__testGraph.graph.emit('node:pointerenter',{target:{id:" + JSON.stringify(N0) + "}})");
-  assert.ok(await js("window.__testGraph.graph.getNodeData().some(n=>window.__testGraph.graph.getElementState(n.id).includes('dim'))")); checks.push('hover dims non-adjacent nodes');
+  assert.ok(await js("window.__testGraph.graph.getNodeData().every(n=>!window.__testGraph.graph.getElementState(n.id).includes('dim'))")); checks.push('hover no longer highlights or dims nodes');
   await js("window.__testGraph.graph.emit('node:pointerleave',{target:{id:" + JSON.stringify(N0) + "}})");
   assert.ok(await js("window.__testGraph.graph.getNodeData().every(n=>!window.__testGraph.graph.getElementState(n.id).includes('dim'))")); checks.push('hover leave restores');
 
@@ -172,6 +185,10 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await click('[data-tab="overview"]');
   await wait(() => js("!!window.__testGraph?.nodes.length && !!document.querySelector('#graph-container canvas')"), 'overview after import'); checks.push('folder one-click import and republish');
 
+  await click('[data-tab="data"]');
+  await wait(()=>js("!!document.querySelector('#build-jobs a[href*=issues]')"),'issue download after import');
+  const report = await js("(async()=>{const link=document.querySelector('#build-jobs a[href*=issues]');const response=await fetch(link.href);return {status:response.status,text:await response.text()}})()");
+  assert.equal(report.status,200); assert.ok(report.text.includes('原始行号')); checks.push('successful import exposes downloadable persistent issue CSV');
   const shot = await cdp('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, 'ui-overview.png'), Buffer.from(shot.data, 'base64'));
   assert.deepEqual(errors, []); fs.writeFileSync(path.join(out, 'ui-browser.json'), JSON.stringify({ checks, errors }, null, 2)); console.log(JSON.stringify({ checks, errors }, null, 2));
 })().catch(e => { console.error(e); console.error(logs.slice(-3000)); process.exitCode = 1; }).finally(() => { ws?.close(); chrome?.kill(); app.kill(); });
