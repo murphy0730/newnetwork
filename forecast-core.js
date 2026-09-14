@@ -24,7 +24,7 @@
       sub_type: field('子库类型'), template: field('项目模板'), subinventory: field('ERP子库'), location_name: field('货位描述'), location: field('货位'),
       org_id: field('组织ID'), category: field('产品大类'), subcategory: field('产品小类'), family: field('产品族')
     } },
-    attributes: { label: '表6 · 制造属性及周期', required: ['code', 'make_dept'], fields: {
+    attributes: { label: '表6 · 制造属性及周期', required: ['code'], fields: {
       code: field('part_no', ['编码']), make_dept: field('make_dept', ['制造部门']), name: field('名称', ['编码名称']),
       lead_mean: field('加工周期均值', ['正常加工周期均值', '平均加工周期', 'lead_time'], 'optionalNumber'),
       lead_cv: field('周期变异系数', ['加工周期变异系数', 'cv'], 'optionalNumber'), sample_count: field('周期样本量', ['样本量'], 'optionalNumber'),
@@ -183,7 +183,7 @@
       const missing = graph.codes.filter(c => !attr.has(c));
       if (missing.length) warnings.push(`${missing.length}个编码缺制造属性（${missing.slice(0, 6).join('、')}），产业/周期分析不完整`);
     }
-    const depts = [...new Set(t.attributes.map(r => r.make_dept))].filter(d => !mapped.has(d));
+    const depts = [...new Set(t.attributes.map(r => r.make_dept))].filter(d => d && !mapped.has(d));
     if (depts.length) warnings.push(`请确认产业映射：${depts.join('、')}`);
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && !r.site_name)) warnings.push('部分正数量预测缺加工地，相关单一加工地判定为数据不完整');
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && r.site_name)) warnings.push('部分加工地只有名称，将按名称临时识别；建议补加工地代码');

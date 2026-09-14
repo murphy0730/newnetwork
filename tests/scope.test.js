@@ -16,6 +16,12 @@ test('编码范围预处理：表1编码 ∩ 表6已维护制造部门，筛选�
   assert.deepEqual([r.before.bom, r.after.bom], [3, 1]);
 });
 
+test('制造属性 make_dept 允许为空上传，预处理阶段再过滤出编码范围', () => {
+  const p = C.parseMatrix('attributes', [['part_no', 'make_dept'], ['A', '甲部门'], ['B', '']]);
+  assert.equal(p.errors.length, 0);
+  assert.equal(p.rows.length, 2); // 上传不拒绝空制造部门
+});
+
 test('库存预处理：子库类型可空，负数可用量按减法计入', () => {
   const inv = C.parseMatrix('inventory', [['创建日期', '编码', '可用量', '子库类型'], ['2026-09-01', 'A', '100', ''], ['2026-09-01', 'A', '-40', '']]);
   assert.equal(inv.errors.length, 0);
