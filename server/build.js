@@ -9,9 +9,10 @@ function normalized(table, rows, issues) {
   const result = [];
   for (let i = 0; i < rows.length; i += 2000) {
     const part = Importer.publicRows(table, rows.slice(i, i + 2000));
-    if (part.errors.length && !issues) throw fail('字段校验失败', 422, part.errors.map(e => ({ ...e, row: e.row + i })));
+    const meaningful = part.errors.filter(e => e.message !== '没有数据行，未执行清空'); // 被预处理规则过滤完不算错误
+    if (meaningful.length && !issues) throw fail('字段校验失败', 422, meaningful.map(e => ({ ...e, row: e.row + i })));
     const invalid = new Set(part.errors.map(e => e.row));
-    for (const e of part.errors) {
+    for (const e of meaningful) {
       const raw = rows[e.row + i - 2] || {}, key = Object.keys(C.schemas[table].fields).find(k => C.schemas[table].fields[k].label === e.field);
       issues.add({ ...e, row: e.row + i, table, code: raw.code ?? raw.part_no ?? raw['编码'], parent: raw.parent ?? raw['父项'], child: raw.child ?? raw['子项'], value: raw[e.field] ?? raw[key], raw });
     }
@@ -37,7 +38,7 @@ async function run(spec, progress = () => {}) {
     if (operation === 'preview') {
       const inputs = await Stream.readInputs(spec.files || [], progress, issues);
       for (const b of body.batches || []) {
-        try { const rows = normalized(b.table, b.rows, issues); if (!rows.length) throw fail('导入空表不执行清空'); inputs.batches.push({ table: b.table, rows }); inputs.summaries.push({ table: b.table, rows: rows.length }); }
+        try { const rows = normalized(b.table, b.rows, issues); if (!rows.length && !b.rows.length) throw fail('导入空表不执行清空'); inputs.batches.push({ table: b.table, rows }); inputs.summaries.push({ table: b.table, rows: rows.length }); }
         catch (e) { for (const detail of e.details || [{ message: e.message }]) issues.add({ table: b.table, file: 'API', sheet: b.table, ...detail }); }
       }
       if (!inputs.batches.length && !issues.counts.errors) throw fail('请至少选择一张有数据的工作表');

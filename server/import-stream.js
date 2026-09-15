@@ -75,7 +75,7 @@ async function normalize(iterator, table, meta, destination, progress = () => {}
   if (!Object.hasOwn(C.schemas, table)) throw bad('目标表无效');
   const headerRow = Number(meta.headerRow || 0);
   if (!Number.isInteger(headerRow) || headerRow < 0 || headerRow > 9) throw bad('表头行须为1至10');
-  let header, rowNumber = 0, batch = [], count = 0, start = headerRow + 1;
+  let header, rowNumber = 0, batch = [], count = 0, start = headerRow + 1, seen = 0;
   const flush = () => {
     if (!batch.length) return;
     const result = parseBatch(table, header, batch, meta);
@@ -100,8 +100,10 @@ async function normalize(iterator, table, meta, destination, progress = () => {}
     batch = []; start = rowNumber;
     progress({ phase: 'normalize', message: `${meta.sheet}：已校验 ${count} 行` });
   };
-  for await (const row of iterator) { const index = rowNumber++; if (index < headerRow) continue; if (index === headerRow) { header = row; continue; } batch.push(row); if (batch.length >= 2000) flush(); }
+  for await (const row of iterator) { const index = rowNumber++; if (index < headerRow) continue; if (index === headerRow) { header = row; continue; } seen++; batch.push(row); if (batch.length >= 2000) flush(); }
   flush();
+  // 数据行被预处理规则全部过滤（如BOM配比小于0.01）只记问题清单，不拦截导入；本表按空表参与计算
+  if (!count && seen && issues) { issues.add({ ...meta, table, field: '数据', message: '数据行均被预处理规则过滤（如BOM配比小于0.01），本表不参与本次计算', severity: 'warning', action: '本表按空表处理；被过滤的行见问题清单' }); return 0; }
   if (!count) throw bad('没有有效数据行，未执行清空', [{ ...meta, row: headerRow + 1, message: '空表请跳过' }]);
   return count;
 }

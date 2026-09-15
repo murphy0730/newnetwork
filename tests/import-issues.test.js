@@ -55,6 +55,24 @@ test('Excel scans multiple selected worksheets and preserves worksheet names in 
   assert.ok(csv.includes('预测来源')); assert.ok(csv.includes('"3","BAD-XLSX"'));
 });
 
+test('filter-rule data never blocks CSV import: small BOM ratios and empty make_dept only enter the issue list', async () => {
+  const root = dir(), output = path.join(root, 'result.supply');
+  const forecast = path.join(root, 'forecast.csv'), bom = path.join(root, 'bom.csv'), attr = path.join(root, 'attributes.csv');
+  fs.writeFileSync(forecast, 'plan_date,code,month,qty,site_code\n2026-09-10,A,2026-09,100,S1\n2026-09-10,B,2026-09,50,S1\n');
+  fs.writeFileSync(bom, 'parent,child,qty\nA,B,0.005\nA,C,0.001\n'); // 全部行配比<0.01
+  fs.writeFileSync(attr, 'part_no,make_dept,lead_mean\nA,甲部门,5\nB,,\n'); // make_dept为空；lead_mean为空不算异常
+  const result = await run({ output, files: [{ path: forecast }, { path: bom }, { path: attr }] });
+  assert.equal(result.issues.errors, 0); assert.ok(result.issues.warnings >= 4);
+  assert.ok(result.issues.byTable.bom >= 3); // 两行配比 + 整表过滤汇总
+  const attrCsv = fs.readFileSync(output + '.issues.attributes.csv', 'utf8');
+  assert.equal(result.issues.byTable.attributes, 1); // 表6仅检查 make_dept 为空，其他字段留空不记异常
+  assert.ok(attrCsv.includes('make_dept'));
+  const artifact = new Artifact(output); try {
+    assert.equal([...artifact.rows('table/bom')].length, 0); // 过滤后不进入后续计算
+    assert.deepEqual([...artifact.rows('table/forecast')].map(r => r.code), ['A']); // B 被范围预处理过滤
+  } finally { artifact.close(); }
+});
+
 test('association errors also have an untruncated report after the shared validation step', async () => {
   const root = dir(), output = path.join(root, 'result.supply');
   await assert.rejects(run({ output, body: { batches: [{ table: 'attributes', rows: Array.from({ length: 1201 }, () => ({ code: 'DUP', make_dept: 'D', lead_mean: 1 })) }] } }), e => { assert.equal(e.issues.errors, 1200); return true; });
