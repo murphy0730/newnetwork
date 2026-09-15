@@ -16,6 +16,16 @@ for (const code of ['ISOLATED-TEST-1', 'ISOLATED-TEST-2']) {
   fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code });
   fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code });
 }
+const summaryMonth = fixtureData.tables.forecast[0].month;
+for (const [code, make_dept, qty] of [['SUM-A', 'a', 100], ['SUM-B1', 'a', 80], ['SUM-B2', 'a', 20], ['SUM-C', 'c', 650]]) {
+  fixtureData.tables.attributes.push({ code, make_dept, lead_mean: 1 });
+  for (let i = 0; i < 6; i++) {
+    const month = require('../forecast-core').addMonth(summaryMonth, i);
+    fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], month, code, qty });
+    fixtureData.tables.inventory.push({ code, date: month + '-01', qty: 30 });
+  }
+}
+fixtureData.tables.bom.push({ id: 'SUM-1', parent: 'SUM-A', child: 'SUM-B1', qty: 2 }, { id: 'SUM-2', parent: 'SUM-B1', child: 'SUM-C', qty: 3 }, { id: 'SUM-3', parent: 'SUM-B2', child: 'SUM-C', qty: 5 });
 const fixtureService = new (require('../server/service').Service)(env.DB_PATH);
 fixtureService.publish(fixtureData, 0, 'local', 'sample'); fixtureService.store.close();
 const app = spawn(process.execPath, ['server/main.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -90,6 +100,38 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await js("document.querySelector('#seg-view [data-view=\"table\"]').click()");
   await wait(() => js("!!document.querySelector('#tbl-body tbody tr')"), 'table view');
   assert.ok(await js("document.querySelectorAll('#tbl-body tbody tr').length>0 && !!document.querySelector('#tbl-body .ins-status') && document.getElementById('pg-total').textContent.includes('页') && document.getElementById('pg-total').textContent.includes('共') && !!document.getElementById('pg-jump') && !!document.getElementById('tbl-span')")); checks.push('summary table view with status badges, total count and page jump');
+  assert.equal(await js("new Set([...document.querySelectorAll('#tbl-body [data-supplier]')].map(r=>r.dataset.supplier)).size"), 20);
+  assert.ok(await js("!document.querySelector('#sc-role option[value=demand]') && document.querySelector('#sc-role').value==='supply'"));
+  assert.ok(await js("document.querySelector('#tbl-body thead').textContent.includes('父项编码')"));
+  await js("document.querySelector('#sc-code').value='SUM-C';document.querySelector('#apply').click()");
+  await wait(() => js("document.querySelector('#pg-total')?.textContent.includes('共 1 个编码')"), 'supplier exact focus');
+  assert.equal(await js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-C\"]').length"), 2);
+  assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('SUM-B1') && !document.querySelector('#tbl-body').textContent.includes('SUM-A')"));
+  assert.ok(await js("document.querySelector('#ov-root').classList.contains('d-off')")); checks.push('supplier focus shows only selected code with all parent contribution rows');
+  await click('#seg-mode [data-mode="cross"]');
+  await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('跨产业编码')"), 'cross table');
+  assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('SUM-A') && !document.querySelector('#tbl-body').textContent.includes('SUM-B1')"));
+  assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['50', '20']); checks.push('cross table uses industry roots and displays the combined GAP once');
+  await js("{ const span=document.querySelector('#tbl-span');span.value='6';span.dispatchEvent(new Event('change')); }");
+  await wait(() => js("document.querySelectorAll('#tbl-body thead tr:first-child th[colspan=\"7\"]').length===6"), 'six month summary');
+  assert.equal(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].at(-1).textContent"), '270');
+  // Intercept only the final workbook download to inspect exactly what the user exports.
+  await js("window.__writeFile=XLSX.writeFile;XLSX.writeFile=wb=>window.__summaryExport=XLSX.utils.sheet_to_json(wb.Sheets.data)");
+  await click('#export-table');
+  await wait(() => js("!!window.__summaryExport && !document.body.hasAttribute('aria-busy')"), 'summary export');
+  const exported = await js('window.__summaryExport');
+  assert.equal(exported.length, 2); assert.deepEqual(exported.map(r => r['跨产业编码']).sort(), ['SUM-A', 'SUM-B2']);
+  assert.equal(exported[0]['库存后缺口'], 270); assert.equal(exported[1]['库存后缺口'], '');
+  await js("XLSX.writeFile=window.__writeFile"); checks.push('six-month display and Excel export preserve all sources without duplicated totals');
+  await click('#seg-mode [data-mode="top"]');
+  await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('最顶层编码')"), 'top table');
+  await js("document.querySelector('#sc-code').value='SUM-A';document.querySelector('#apply').click()");
+  await wait(() => js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-A\"]').length===1"), 'root table');
+  assert.ok(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].every(x=>x.textContent==='0')")); checks.push('top-level supplier keeps forecasts and inventory with zero not-applicable GAP');
+  await js("{ const span=document.querySelector('#tbl-span');span.value='1';span.dispatchEvent(new Event('change')); }");
+  await wait(() => js("document.querySelectorAll('#tbl-body thead tr:first-child th[colspan=\"7\"]').length===1"), 'reset month count');
+  await click('#seg-mode [data-mode="direct"]');
+  await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('父项编码')"), 'reset mode');
   const tblCode = await js("document.querySelector('#tbl-body [data-code]').dataset.code");
   await js("document.querySelector('#tbl-body [data-code]').click()");
   await wait(() => js("!!document.querySelector('#graph-container canvas') && window.__testGraph.nodes.some(n=>n.code===" + JSON.stringify(tblCode) + ")"), 'row drill'); checks.push('table row drills back to graph');

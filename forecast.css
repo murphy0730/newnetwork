@@ -52,3 +52,5 @@
 .ins-limits{margin:6px 0 0;padding-left:18px;color:var(--ink-3);line-height:1.8;font-size:11.5px}
 /* 供应汇总表：铺满展示区，取消 520px 上限 */
 .fc-tablewrap.tbl-fill{flex:1;min-height:0;max-height:none;overflow:auto}
+.tbl-fill .supplier-start td{border-top:2px solid var(--line)}
+.tbl-fill td[rowspan]{vertical-align:top}
