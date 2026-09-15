@@ -163,7 +163,7 @@ class Service {
     if (!['individual', 'cumulative'].includes(periodMode)) throw error('月份计算方式无效');
     if (String(q.summary) === '1' && q.role === 'demand') throw error('供应汇总表暂不支持需求方视角，请切换为供应方');
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [], spanMonths: [], periodMode, periods: [] };
-    if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'industry-block-root-v1', periodMode });
+    if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'first-cross-industry-v2', periodMode });
     const span = int(q.span, 1, 1, 6), spanMonths = String(q.summary) === '1' ? Array.from({ length: span }, (_, i) => C.addMonth(month, i)) : engine.months.slice(engine.months.indexOf(month), engine.months.indexOf(month) + span);
     const indexed = String(q.summary) === '1' ? require('./supply-summary').view(engine, month, mode, source) : Query.view(engine, month, mode, source);
     let input = indexed.rows;

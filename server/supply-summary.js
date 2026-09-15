@@ -32,8 +32,8 @@ function replaceDemand(row, demand, applicable, known) {
   return { ...row, applicable, demand: applicable && known ? demand : null, complete, gap, coverageGap: !applicable ? 0 : gap != null && row.inventory != null ? gap - row.inventory : null, risks };
 }
 
-// Two forward DAG passes folded into one: industry-internal demand, then cross-boundary
-// demand. O(V+E) per month, no enumeration of paths or pairwise transitive closure.
+// Propagate demand through the supplier's industry; crossing an industry boundary
+// starts from that immediate parent's own net forecast. O(V+E) per month.
 function view(engine, month, mode, source) {
   let views = cache.get(engine); if (!views) cache.set(engine, views = new Map());
   const key = JSON.stringify([month, mode, source]);
@@ -41,22 +41,19 @@ function view(engine, month, mode, source) {
   const input = Query.view(engine, month, mode === 'cross' ? 'direct' : mode, source);
   let byCode;
   if (mode === 'cross') {
-    const internal = new Map(), external = new Map(); byCode = new Map();
+    const external = new Map(); byCode = new Map();
     for (const code of engine.graph.order) {
-      const parents = engine.graph.parents.get(code), net = engine.net(code, month);
-      const same = parents.filter(e => engine.sameIndustry(e.parent, code));
-      const block = { amount: 0, known: true };
-      if (!same.length) { block.amount = net.demand || 0; block.known = net.known && engine.dept(code) != null; }
-      else for (const edge of same) { const p = internal.get(edge.parent); block.amount += p.amount * edge.qty; block.known &&= p.known; }
-      internal.set(code, block);
+      const parents = engine.graph.parents.get(code);
       const cross = { amount: 0, known: true, applicable: false };
       for (const edge of parents) {
-        const sameDept = engine.sameIndustry(edge.parent, code), p = sameDept ? external.get(edge.parent) : internal.get(edge.parent);
+        const sameDept = engine.sameIndustry(edge.parent, code);
+        const net = sameDept ? null : engine.net(edge.parent, month);
+        const p = sameDept ? external.get(edge.parent) : { amount: net.demand || 0, known: net.known && engine.dept(edge.parent) != null, applicable: true };
         cross.amount += p.amount * edge.qty;
         cross.known &&= p.known && engine.dept(code) != null;
         cross.applicable ||= !sameDept || p.applicable;
       }
-      if (!Number.isFinite(block.amount) || !Number.isFinite(cross.amount)) throw Error('BOM累计需求超出计算范围');
+      if (!Number.isFinite(cross.amount)) throw Error('BOM累计需求超出计算范围');
       external.set(code, cross);
     }
     for (const row of input.rows) { const x = external.get(row.code); byCode.set(row.code, replaceDemand(row, x.amount, x.applicable, x.known)); }
@@ -81,19 +78,9 @@ function view(engine, month, mode, source) {
 // Relations are materialized only for the requested page, never an all-pairs BOM closure.
 function relations(engine, code, mode) {
   if (mode !== 'cross') return engine.relations(code, mode);
-  // State 0 searches the supplier's industry; state 1 follows the next industry's
-  // own same-department parents to its roots. Distinct states allow converging paths.
-  const visited = [new Set([code]), new Set()], queue = [[code, 0]], amounts = [new Map([[code, 1]]), new Map()], unknown = [new Set(), new Set()], targets = new Map();
-  const next = (c, state) => (engine.graph.parents.get(c) || []).filter(e => state === 0 || engine.sameIndustry(c, e.parent)).map(e => [e.parent, state === 0 && engine.sameIndustry(c, e.parent) ? 0 : 1, e.qty]);
-  for (let i = 0; i < queue.length; i++) for (const [parent, state] of next(...queue[i])) if (!visited[state].has(parent)) { visited[state].add(parent); queue.push([parent, state]); }
-  queue.sort((a, b) => engine.orderIndex.get(b[0]) - engine.orderIndex.get(a[0]));
-  for (const [c, state] of queue) {
-    const edges = next(c, state), coeff = amounts[state].get(c) || 0;
-    if (engine.dept(c) == null) unknown[state].add(c);
-    if (state === 1 && !edges.length) targets.set(c, { code: c, coeff, kind: unknown[state].has(c) ? '产业未确认' : '跨产业链顶端' });
-    for (const [parent, ps, qty] of edges) { const value = (amounts[ps].get(parent) || 0) + coeff * qty; if (!Number.isFinite(value)) throw Error('BOM累计用量超出计算范围'); amounts[ps].set(parent, value); if (unknown[state].has(c)) unknown[ps].add(parent); }
-  }
-  return [...targets.values()];
+  // Reuse the graph/insights frontier, stopping at the first different make_dept.
+  // A same-industry root is not a cross-industry demand source for this table.
+  return engine.relations(code, mode).filter(link => link.kind !== '本产业最顶层');
 }
 
 function decorate(engine, base, month, span, months, mode, source, periodMode = 'individual') {
