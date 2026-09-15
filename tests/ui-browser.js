@@ -113,15 +113,30 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('SUM-A') && !document.querySelector('#tbl-body').textContent.includes('SUM-B1')"));
   assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['50', '20']); checks.push('cross table uses industry roots and displays the combined GAP once');
   await js("{ const span=document.querySelector('#tbl-span');span.value='6';span.dispatchEvent(new Event('change')); }");
-  await wait(() => js("document.querySelectorAll('#tbl-body thead tr:first-child th[colspan=\"7\"]').length===6"), 'six month summary');
-  assert.equal(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].at(-1).textContent"), '270');
+  await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===6"), 'six month summary');
+  assert.equal(await js("document.querySelector('#tbl-period-mode').value"), 'individual');
+  assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['50', '20', '50', '50', '50', '50', '50']);
+  assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body th[data-period-start]')].map(x=>x.colSpan)"), [12, 10, 10, 10, 10, 10]);
   // Intercept only the final workbook download to inspect exactly what the user exports.
   await js("window.__writeFile=XLSX.writeFile;XLSX.writeFile=wb=>window.__summaryExport=XLSX.utils.sheet_to_json(wb.Sheets.data)");
   await click('#export-table');
   await wait(() => js("!!window.__summaryExport && !document.body.hasAttribute('aria-busy')"), 'summary export');
   const exported = await js('window.__summaryExport');
   assert.equal(exported.length, 2); assert.deepEqual(exported.map(r => r['跨产业编码']).sort(), ['SUM-A', 'SUM-B2']);
-  assert.equal(exported[0]['库存后缺口'], 270); assert.equal(exported[1]['库存后缺口'], '');
+  const monthlyGaps = Object.keys(exported[0]).filter(k => k.startsWith('库存后缺口 '));
+  assert.equal(monthlyGaps.length, 1);
+  assert.equal(Object.keys(exported[0]).filter(k => k.startsWith('月初库存 ')).length, 1);
+  assert.equal(Object.keys(exported[0]).filter(k => k.startsWith('预测缺口 ')).length, 6);
+  for (const key of monthlyGaps) { assert.equal(exported[0][key], 20); assert.equal(exported[1][key], ''); }
+  await js("{ const mode=document.querySelector('#tbl-period-mode');mode.value='cumulative';mode.dispatchEvent(new Event('change')); }");
+  await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===1 && document.querySelector('#tbl-body th[data-period-start]')?.colSpan===13"), 'cumulative mode');
+  assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['300', '270']);
+  assert.ok(await js("document.querySelector('#tbl-body th[data-period-start]').textContent.includes('-')"));
+  await js('window.__summaryExport=null'); await click('#export-table');
+  await wait(() => js("!!window.__summaryExport && !document.body.hasAttribute('aria-busy')"), 'cumulative export');
+  const cumulativeExport = await js('window.__summaryExport'), cumulativeGaps = Object.keys(cumulativeExport[0]).filter(k => k.startsWith('库存后缺口 '));
+  assert.equal(cumulativeGaps.length, 1); assert.equal(cumulativeExport[0][cumulativeGaps[0]], 270); assert.equal(cumulativeExport[1][cumulativeGaps[0]], '');
+  assert.equal(cumulativeExport[0]['计算方式'], '累计月份');
   await js("XLSX.writeFile=window.__writeFile"); checks.push('six-month display and Excel export preserve all sources without duplicated totals');
   await click('#seg-mode [data-mode="top"]');
   await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('最顶层编码')"), 'top table');
@@ -129,7 +144,9 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await wait(() => js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-A\"]').length===1"), 'root table');
   assert.ok(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].every(x=>x.textContent==='0')")); checks.push('top-level supplier keeps forecasts and inventory with zero not-applicable GAP');
   await js("{ const span=document.querySelector('#tbl-span');span.value='1';span.dispatchEvent(new Event('change')); }");
-  await wait(() => js("document.querySelectorAll('#tbl-body thead tr:first-child th[colspan=\"7\"]').length===1"), 'reset month count');
+  await wait(() => js("!!document.querySelector('#tbl-body th[data-period-start]') && document.querySelector('#tbl-body th[data-period-start]').dataset.periodStart===document.querySelector('#tbl-body th[data-period-start]').dataset.periodEnd"), 'reset month count');
+  await js("{ const mode=document.querySelector('#tbl-period-mode');mode.value='individual';mode.dispatchEvent(new Event('change')); }");
+  await wait(() => js("document.querySelector('#tbl-body th[data-period-start]')?.colSpan===12"), 'reset period mode');
   await click('#seg-mode [data-mode="direct"]');
   await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('父项编码')"), 'reset mode');
   const tblCode = await js("document.querySelector('#tbl-body [data-code]').dataset.code");

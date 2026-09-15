@@ -18,6 +18,32 @@ function serviceTest(run) {
 }
 const q = { summary: 1, role: 'supply', month: '2026-09', limit: 20 };
 
+test('supplier ordering is bottom-up, then scope sources, then forecast presence before pagination', () => serviceTest(s => {
+  const data = C.empty(); data.kind = 'imported';
+  for (const [code, make_dept, qty] of [['ROOT', 'a', 10000], ['MID', 'a', 1], ['DEEP', 'c', 1000], ['ZERO', 'c', 0], ['MISSING', 'c', null], ['LOCAL', 'a', 50000], ['ISO', 'a', 99]]) {
+    data.tables.attributes.push({ code, make_dept, lead_mean: 1 });
+    if (qty != null) data.tables.forecast.push({ code, plan_date: '2026-08-24', month: q.month, qty, site_code: 'S' });
+    // A different month's record must not qualify as a current-month forecast.
+    data.tables.forecast.push({ code, plan_date: '2026-08-24', month: '2026-10', qty: code === 'MISSING' ? 5 : 0, site_code: 'S' });
+  }
+  for (const [parent, child] of [['ROOT', 'MID'], ['MID', 'DEEP'], ['ROOT', 'ZERO'], ['ROOT', 'MISSING'], ['ROOT', 'LOCAL']]) data.tables.bom.push({ id: parent + '-' + child, parent, child, qty: 1 });
+  s.publish(data, 1, 'test', 'test');
+  for (const mode of ['direct', 'cross', 'top']) {
+    const all = s.list({ ...q, mode }, 'test');
+    const expected = mode === 'cross' ? ['DEEP', 'ZERO', 'MISSING', 'ISO', 'LOCAL', 'MID', 'ROOT'] : ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT'];
+    assert.deepEqual(all.rows.map(r => r.code), expected, mode);
+    const paged = [];
+    for (let offset = 0; offset < all.total; offset += 2) paged.push(...s.list({ ...q, mode, limit: 2, offset }, 'test').rows.map(r => r.code));
+    assert.deepEqual(paged, expected, 'pagination retains global order');
+    const filtered = s.list({ ...q, mode, codes: ['ROOT', 'MISSING', 'DEEP'] }, 'test');
+    assert.deepEqual(filtered.rows.map(r => r.code), ['DEEP', 'MISSING', 'ROOT']);
+  }
+  const later = s.list({ ...q, mode: 'cross', month: '2026-10' }, 'test');
+  assert.deepEqual(later.rows.map(r => r.code), ['DEEP', 'MISSING', 'ZERO', 'ISO', 'LOCAL', 'MID', 'ROOT']);
+  // Multi-month display keeps the start-month ordering used by the table filters.
+  assert.deepEqual(s.list({ ...q, mode: 'cross', span: 2 }, 'test').rows.map(r => r.code), ['DEEP', 'ZERO', 'MISSING', 'ISO', 'LOCAL', 'MID', 'ROOT']);
+}));
+
 test('supplier table retains all codes; focus is exact and demand role is suspended only for summary', () => serviceTest(s => {
   for (const mode of ['direct', 'cross', 'top']) {
     const all = s.list({ ...q, mode }, 'test'); assert.equal(all.total, 5);
@@ -104,3 +130,55 @@ test('raw adjustments and production-order supply retain the same forecast deman
     assert.equal(detail.gap, source === 'forecast' ? -35 : 40);
   }
 });
+
+test('individual months include inventory only in the selected first month; cumulative inventory stays unchanged', () => serviceTest(s => {
+  const data = fixture();
+  // Supply 650, 750, 850; demand 700 each month. Inventory varies independently.
+  for (const r of data.tables.forecast) if (r.code === 'C') r.qty = { '2026-09': 650, '2026-10': 750, '2026-11': 850 }[r.month] ?? r.qty;
+  for (const r of data.tables.inventory) if (r.code === 'C') r.qty = { '2026-09-01': 30, '2026-10-01': 100, '2026-11-01': 5 }[r.date] ?? r.qty;
+  s.publish(data, 1, 'test', 'test');
+  for (const mode of ['direct', 'cross', 'top']) {
+    const args = { ...q, mode, span: 3, code: 'C' };
+    const individual = s.list({ ...args, periodMode: 'individual' }, 'test'), cumulative = s.list({ ...args, periodMode: 'cumulative' }, 'test');
+    assert.equal(individual.periods.length, 3); assert.equal(cumulative.periods.length, 1);
+    assert.equal(cumulative.periods[0].label, '2026年9-11月');
+    const separate = individual.rows[0].periods, combined = cumulative.rows[0].periods[0];
+    assert.deepEqual(individual.periods.map(r => r.inventoryIncluded), [true, false, false]);
+    assert.deepEqual(separate.map(r => r.inventoryIncluded), [true, false, false]);
+    assert.deepEqual(separate.map(r => r.inventory), [30, null, null]);
+    assert.deepEqual(separate.map(r => r.supply), [650, 750, 850]);
+    assert.equal(combined.supply, 2250); assert.equal(combined.inventory, 30);
+    assert.equal(combined.demand, separate.reduce((sum, r) => sum + r.demand, 0));
+    assert.equal(combined.coverageGap, combined.demand - 2250 - 30);
+    assert.deepEqual(individual.rows[0].targets.map(t => t.demand), cumulative.rows[0].targets.map(t => t.demand));
+    if (mode !== 'direct') {
+      assert.deepEqual(separate.map(r => r.gap), [50, -50, -150]);
+      assert.deepEqual(separate.map(r => r.coverageGap), [20, null, null]);
+      assert.equal(combined.coverageGap, -180); assert.equal(combined.firstShortage, '2026-09');
+    }
+  }
+  const shifted = s.list({ ...q, month: '2026-10', code: 'C', mode: 'cross', span: 3, periodMode: 'individual' }, 'test').rows[0].periods;
+  assert.equal(shifted[0].inventory, 100); assert.equal(shifted[0].gap, -50); assert.equal(shifted[0].coverageGap, -150);
+  assert.equal(shifted[1].inventoryIncluded, false); assert.equal(shifted[1].gap, -150); assert.equal(shifted[1].coverageGap, null);
+  data.tables.inventory = data.tables.inventory.filter(r => r.date !== '2026-09-01');
+  s.publish(data, 2, 'test', 'test');
+  const missingInventory = s.list({ ...q, code: 'C', mode: 'cross', span: 3, periodMode: 'individual' }, 'test').rows[0].periods;
+  assert.equal(missingInventory[0].inventoryIncluded, true); assert.equal(missingInventory[0].coverageGap, null); assert.equal(missingInventory[0].gap, 50);
+  assert.equal(missingInventory[1].gap, -50); assert.equal(missingInventory[1].complete, true);
+  assert.throws(() => s.list({ ...q, periodMode: 'bad' }, 'test'), /月份计算方式无效/);
+  for (const periodMode of ['individual', 'cumulative']) assert.throws(() => s.list({ ...q, span: 7, periodMode }, 'test'), /超出范围/);
+}));
+
+test('calendar months are never skipped; cumulative missing data is unknown and year ranges are explicit', () => serviceTest(s => {
+  const data = fixture(); data.tables.forecast = data.tables.forecast.filter(r => r.month !== '2026-10');
+  s.publish(data, 1, 'test', 'test');
+  const result = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'individual' }, 'test');
+  assert.deepEqual(result.spanMonths, ['2026-09', '2026-10', '2026-11']);
+  const rows = result.rows[0].periods; assert.equal(rows[1].complete, false); assert.equal(rows[1].supply, null); assert.equal(rows[1].gap, null); assert.equal(rows[1].inventory, null); assert.equal(rows[1].inventoryIncluded, false); assert.equal(rows[2].complete, true);
+  const combined = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test').rows[0].periods[0];
+  assert.equal(combined.complete, false); assert.equal(combined.supply, null); assert.equal(combined.demand, null); assert.equal(combined.coverageGap, null);
+  const crossYear = s.list({ ...q, month: '2026-12', mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test');
+  assert.equal(crossYear.periods[0].label, '2026年12月-2027年2月');
+  const tail = s.list({ ...q, month: '2027-02', mode: 'cross', span: 6, code: 'C', periodMode: 'individual' }, 'test');
+  assert.equal(tail.rows[0].periods.length, 6); assert.equal(tail.rows[0].periods.at(-1).complete, false);
+}));
