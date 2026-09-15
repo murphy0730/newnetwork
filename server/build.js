@@ -43,7 +43,7 @@ async function run(spec, progress = () => {}) {
       }
       if (!inputs.batches.length && !issues.counts.errors) throw fail('请至少选择一张有数据的工作表');
       next = Stream.merge(base, inputs.batches); summaries = inputs.summaries; sources = inputs.sources;
-    } else if (operation === 'sample' || operation === 'sampleLarge') next = operation === 'sample' ? C.sample() : C.sampleLarge();
+    } else if (operation === 'sample' || operation === 'sampleLarge') next = operation === 'sample' ? C.sample() : require('./demo-data').demo();
     else if (operation === 'restore') { if (!store || !Number.isInteger(body.revision) || body.revision < 1) throw fail('恢复版本无效'); next = store.load(body.revision); }
     else if (operation === 'config') {
       next = { ...base, tables: { ...base.tables }, config: { ...base.config, ...body.config } };

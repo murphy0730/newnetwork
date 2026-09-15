@@ -41,8 +41,8 @@ test('HTTP roles, AI read/simulation tools, async jobs, exports and protected ba
     const file = await upload('最新样例.xlsx', bytes);
     const preview = await job('/api/import/preview', admin, { baseRevision: 1, files: [{ id: file.id, selections: file.sheets.filter(s => s.detected).map(s => ({ sheet: s.name, table: s.detected.table })) }] });
     const imported = await job('/api/import/commit', admin, { previewId: preview.previewId });
-    assert.equal(imported.codes, 500); assert.equal(imported.kind, 'imported');
-    const graph = await (await req('/api/graph?code=MD-01&graphRelations=bom&limit=100', viewer)).json(); assert.ok(graph.nodes.length); assert.ok(graph.edges.length);
+    assert.equal(imported.codes, 240); assert.equal(imported.kind, 'imported');
+    const graph = await (await req('/api/graph?code=MD-001&graphRelations=bom&limit=100', viewer)).json(); assert.ok(graph.nodes.length); assert.ok(graph.edges.length);
     for (const asset of ['/forecast-graph.js', '/vendor/g6.min.js']) assert.equal((await req(asset)).status, 200);
     const attrMeta = await job('/api/maintain', admin, { baseRevision: imported.revision, table: 'attributes', rows: [{ code: 'CSV-0001', make_dept: '整机事业部', name: 'CSV测试件' }] }); // 新规则：表6有制造部门的编码才在分析范围
     assert.equal(attrMeta.revision, 3);

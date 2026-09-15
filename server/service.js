@@ -314,7 +314,7 @@ class Service {
     return this.publish(s, body.baseRevision, actor, 'config');
   }
   sample(body, actor) { const s = this.state(); if (body.baseRevision !== s.revision) throw error('数据版本已变化', 409); return this.publish(C.sample(), s.revision, actor, 'sample'); }
-  sampleLarge(body, actor) { const s = this.state(); if (body.baseRevision !== s.revision) throw error('数据版本已变化', 409); return this.publish(C.sampleLarge(), s.revision, actor, 'sample'); }
+  sampleLarge(body, actor) { const s = this.state(); if (body.baseRevision !== s.revision) throw error('数据版本已变化', 409); return this.publish(require('./demo-data').demo(), s.revision, actor, 'sample'); }
   restore(body, actor) { const s = this.state(); if (body.baseRevision !== s.revision) throw error('数据版本已变化', 409); const old = this.store.load(int(body.revision, 0, 1, 1e9)); return this.publish(old, s.revision, actor, 'restore'); }
   maintain(body, actor) {
     if (!['attributes', 'adjust'].includes(body.table)) throw error('仅支持制造属性或表2维护');
@@ -326,6 +326,6 @@ class Service {
     return this.publish(s, body.baseRevision, actor, 'maintain:' + body.table);
   }
   table(q) { if (!Object.hasOwn(C.schemas, q.table)) throw error('表名无效'); const revision = q.revision == null || q.revision === '' ? this.store.revision() : int(q.revision, 0, 0, 1e9); return { ...this.store.table(q.table, q.code, int(q.offset, 0, 0, 1e9), int(q.limit, 100, 1, 1000), revision), revision }; }
-  export(q) { return Importer.workbook(q.kind === 'template' ? C.empty() : q.kind === 'sample' ? C.sampleLarge(0.1) : this.state(), q.kind === 'template'); }
+  export(q) { return Importer.workbook(q.kind === 'template' ? C.empty() : q.kind === 'sample' ? require('./demo-data').demo() : this.state(), q.kind === 'template', q.kind === 'template' ? q.table : undefined); }
 }
 module.exports = { Service, changesFor, error };

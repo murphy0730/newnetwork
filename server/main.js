@@ -113,7 +113,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, buildJobs.get(pathname.split('/').at(-1), user.actor));
     }
     if (pathname === '/api/meta' && req.method === 'GET') return json(res, 200, catalog.info());
-    if (pathname === '/api/export' && req.method === 'GET' && q.kind === 'template') { const bytes = require('./importer').workbook(C.empty(), true); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="supply-template.xlsx"' }); res.end(bytes); return; }
+    if (pathname === '/api/export' && req.method === 'GET' && q.kind === 'template') { const bytes = require('./importer').workbook(C.empty(), true, q.table); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="supply-template' + (q.table ? '-' + q.table : '') + '.xlsx"' }); res.end(bytes); return; }
     if (readRoutes.has(pathname) && req.method === 'GET') { const pinned = !q.scenario && (q.revision == null || q.revision === '') ? { ...q, revision: catalog.revision() } : q; const result = await reader.call(readRoutes.get(pathname), pinned, user.actor, { signal: requestAbort.signal }); return json(res, 200, result); }
     if (pathname === '/api/export' && req.method === 'GET' && ['artifact', 'csv'].includes(q.kind)) {
       const ref = catalog.db.prepare('SELECT path FROM artifact_refs WHERE revision=?').get(catalog.revision());

@@ -222,6 +222,10 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   // 13. import 文件夹一键导入
   await click('[data-tab="data"]');
   await wait(() => js("document.getElementById('folder-files')?.textContent.includes('folder-test.csv')"), 'folder scan');
+  const templates = await js("(async()=>{const links=[...document.querySelectorAll('.import-grid a[data-template]')];return Promise.all(links.map(async link=>{const r=await fetch(link.href),wb=XLSX.read(await r.arrayBuffer(),{type:'array'});return {table:link.dataset.template,status:r.status,sheets:wb.SheetNames,rows:XLSX.utils.sheet_to_json(wb.Sheets[link.dataset.template]).length}}))})()");
+  assert.equal(templates.length, 6);
+  for (const t of templates) { assert.equal(t.status, 200); assert.deepEqual(t.sheets, [t.table, '填写说明']); assert.equal(t.rows, 3); }
+  checks.push('all six import cards download their own template with three sample rows');
   await click('#import-folder');
   await wait(() => js("!document.body.hasAttribute('aria-busy') && !!document.querySelector('.import-grid')"), 'folder import', 180000);
   await click('[data-tab="overview"]');

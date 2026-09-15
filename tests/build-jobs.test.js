@@ -21,6 +21,14 @@ test('online builds release failed uploads, preserve baseline, reject stale acti
     start(); await ready();
     assert.ok((await request('/api/import/schema')).schemas.forecast.fields.site_code);
     assert.equal((await fetch(base + '/api/export?kind=template')).status, 200);
+    for (const table of Object.keys(C.schemas)) {
+      const response = await fetch(base + '/api/export?kind=template&table=' + table);
+      assert.equal(response.status, 200); assert.ok(response.headers.get('content-disposition').includes('-' + table + '.xlsx'));
+      const wb = require('../vendor/xlsx').read(Buffer.from(await response.arrayBuffer()), { type: 'buffer' });
+      assert.deepEqual(wb.SheetNames, [table, '填写说明']);
+      assert.equal(require('../vendor/xlsx').utils.sheet_to_json(wb.Sheets[table]).length, 3);
+    }
+    assert.equal((await fetch(base + '/api/export?kind=template&table=__proto__')).status, 400);
     const seed = await poll(await request('/api/sample', { baseRevision: 0 })); assert.equal(seed.revision, 1);
     const header = 'plan_date,code,month,qty,site_code\n';
     for (let attempt = 0; attempt < 3; attempt++) {

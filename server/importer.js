@@ -51,10 +51,12 @@ function publicRows(table, rows) {
   if (keys.length * rows.length > 100000000) throw Error('单批API数据最多1亿单元格');
   return require('./import-stream').parseBatch(table, keys, rows.map(r => keys.map(k => r[k] == null ? '' : r[k])), { file: 'API', sheet: table });
 }
-function workbook(snapshot, template = false) {
-  const wb = XLSX.utils.book_new(), sample = C.sample();
-  for (const [table, schema] of Object.entries(C.schemas)) {
-    const keys = Object.keys(schema.fields), rows = template ? [] : snapshot.tables[table];
+function workbook(snapshot, template = false, selectedTable) {
+  if (selectedTable != null && !Object.hasOwn(C.schemas, selectedTable)) throw Object.assign(Error('模板表名无效'), { status: 400 });
+  const wb = XLSX.utils.book_new(), sample = template ? require('./demo-data').templateSample() : null;
+  const schemas = Object.entries(C.schemas).filter(([table]) => !selectedTable || table === selectedTable);
+  for (const [table, schema] of schemas) {
+    const keys = Object.keys(schema.fields), rows = template ? sample.tables[table] : snapshot.tables[table];
     const matrix = [keys.map(k => schema.fields[k].label)];
     for (const r of rows) matrix.push(keys.map(k => typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k] == null ? '' : r[k]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(matrix), table);
@@ -63,15 +65,17 @@ function workbook(snapshot, template = false) {
     // 填写说明页：表头不匹配任何数据表，导入预览时默认跳过
     const guide = [
       ['供应网络控制塔 · 导入模板填写说明'],
+      ['本模板每张数据表含3条填写样例。正式导入前请删除或替换样例数据；多个单表模板使用同一组DEMO编码，可合并为一批验证。单表模板不代表仅导入该表就具备完整分析数据。'],
       ['1. 每张工作表对应一类数据，表头须与本模板一致，可位于前10行内任意一行；空表直接跳过即可，不会清空已有数据。'],
       ['2. 编码请用文本格式保存（避免科学计数法）；月份格式YYYY-MM；日期格式YYYY-MM-DD；布尔字段填 是/否。'],
       ['3. 预测按计划日期覆盖完整版本，库存按日期覆盖完整快照；BOM、制造属性、调整表整表替换；多文件多表作为同一批次校验，确认后原子提交并预计算。'],
       ['4. 大型数据建议按表分片CSV。在线流式上传，独立进程构建，页面可查看阶段、错误和结果；不设文件总量/总单元格/编码数上限，实际受机器内存、磁盘及Excel格式限制。'],
       ['5. 库存可用量支持负数（按减法计入），子库类型可留空；表6制造部门留空会记录数据问题；BOM配比小于0.01及编码范围过滤也会逐行记录。成功或失败任务均可下载全部及分表问题CSV，保留7天。'],
       ['6. 同一预测版本或库存日期的全部分片应作为同一批次提交。构建完成后装载.supply产物，不再在线全量重算；产物保存完整数据及计算结果，可回溯。'],
+      ['7. 表2示例同时展示供应添加与使用剔除。已预处理净预测模式不会重复应用表2；仅原始预测模式应用调整数量。生产指令为可选数据。'],
       [],
       ['工作表', '数据名称', '必填字段'],
-      ...Object.entries(C.schemas).map(([k, s]) => [k, s.label, s.required.map(f => s.fields[f].label).join('、')])
+      ...schemas.map(([k, s]) => [k, s.label, s.required.map(f => s.fields[f].label).join('、')])
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(guide), '填写说明');
   }
