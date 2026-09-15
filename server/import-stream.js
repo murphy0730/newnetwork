@@ -136,7 +136,8 @@ async function readInputs(files, progress = () => {}, issues) {
   return { batches: [...groups].map(([table, rows]) => ({ table, rows })), summaries, sources };
 }
 function merge(base, batches) {
-  const starting = base.kind === 'sample' ? C.empty() : base, next = { ...starting, tables: { ...starting.tables }, config: { ...starting.config }, kind: 'imported' }, groups = new Map();
+  // Replacing demonstration rows must not reset the user's calculation settings.
+  const starting = base.kind === 'sample' ? C.empty() : base, next = { ...starting, tables: { ...starting.tables }, config: { ...C.defaults, ...base.config }, kind: 'imported' }, groups = new Map();
   for (const batch of batches) { if (!groups.has(batch.table)) groups.set(batch.table, []); for (const r of batch.rows) groups.get(batch.table).push(r); }
   for (const [table, rows] of groups) {
     if (table === 'forecast' || table === 'inventory') { const key = table === 'forecast' ? 'plan_date' : 'date', replacing = new Set(rows.map(r => r[key])); next.tables[table] = starting.tables[table].filter(r => !replacing.has(r[key])).concat(rows); }
