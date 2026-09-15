@@ -167,6 +167,8 @@ class Service {
       if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
       input = Query.dependencies(engine, q.code, month, mode, source).sort(Query.compare);
     }
+    // 汇总表不展示无上下级的独立编码（graph.parents/children 均为空）
+    if (q.linked) input = input.filter(r => engine.graph.parents.get(r.code).length > 0 || engine.graph.children.get(r.code).length > 0);
     // 汇总卡片随维度筛选（加工地/产业/大类/搜索/角色）联动；不随风险筛选变化，否则点选某风险卡后其他卡片会归零
     const dimensioned = Query.filter(indexed, { ...q, risk: '' }, engine, input);
     const dashboard = Query.summarize(dimensioned, engine);
@@ -182,12 +184,13 @@ class Service {
     const rows = spanMonths.map(m => engine.row(r.code, m, mode, source));
     const complete = rows.length === span && rows.every(x => x.complete); // 剩余月份不足所选月份数时按数据不完整处理
     const supply = complete ? rows.reduce((s, x) => s + x.supply, 0) : null, demand = complete ? rows.reduce((s, x) => s + x.demand, 0) : null;
+    const raw = rows.reduce((s, x) => s + (x.raw || 0), 0), add = rows.reduce((s, x) => s + (x.add || 0), 0), remove = rows.reduce((s, x) => s + (x.remove || 0), 0);
     const inventory = rows[0].inventory;
     let water = inventory, firstShortage = null;
     for (let i = 0; i < rows.length; i++) { const x = rows[i]; if (water == null || !x.complete) { water = null; continue; } water += x.supply - x.demand; if (water < -C.EPS && !firstShortage) firstShortage = spanMonths[i]; }
-    return { ...base, complete, supply, demand, gap: complete && engine.graph.parents.get(r.code).length ? demand - supply : null, inventory, coverageGap: complete && inventory != null ? demand - supply - inventory : null, firstShortage, risks: [...new Set(rows.flatMap(x => x.risks))], monthly: rows.map((x, i) => ({ month: spanMonths[i], supply: x.supply, demand: x.demand, gap: x.gap, complete: x.complete })) };
+    return { ...base, complete, supply, demand, raw, add, remove, gap: complete && engine.graph.parents.get(r.code).length ? demand - supply : null, inventory, coverageGap: complete && inventory != null ? demand - supply - inventory : null, firstShortage, risks: [...new Set(rows.flatMap(x => x.risks))], monthly: rows.map((x, i) => ({ month: spanMonths[i], raw: x.raw ?? 0, add: x.add ?? 0, remove: x.remove ?? 0, supply: x.supply, demand: x.demand, gap: x.gap, complete: x.complete })) };
   }
-  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '', category: r.attr.part_category || '', supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
+  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '', category: r.attr.part_category || '', raw: r.raw ?? 0, add: r.add ?? 0, remove: r.remove ?? 0, supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
   insights(q, actor) { return require('./insights')(this, q, actor); }
   prepareSimulation(q, actor) { const { engine, trace } = this.context(q, actor); return { ready: true, trace, codes: engine.graph.codes.length, note: '推演线程已装载该基线；后续模拟仍为独立情景，不修改基线。' }; }
   detail(q, actor) {

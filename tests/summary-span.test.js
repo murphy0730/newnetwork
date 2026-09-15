@@ -47,13 +47,32 @@ test('summary table aggregates up to 6 months with rolling inventory and cross-i
     assert.deepEqual(multi.spanMonths, [m, C.addMonth(m, 1), C.addMonth(m, 2)]);
     const a = multi.rows.find(r => r.code === 'A');
     assert.equal(a.supply, 3000); assert.equal(a.demand, 3300); assert.equal(a.gap, 300);
+    assert.equal(a.raw, 3000); assert.equal(a.add, 0); assert.equal(a.remove, 0);
     assert.equal(a.inventory, 200); assert.equal(a.coverageGap, 100); assert.equal(a.firstShortage, C.addMonth(m, 2));
-    assert.equal(a.monthly.length, 3); assert.equal(a.monthly[0].gap, 100);
+    assert.equal(a.monthly.length, 3); assert.equal(a.monthly[0].gap, 100); assert.equal(a.monthly[0].raw, 1000);
     // 剩余月份不足所选月份数 → 数据不完整
     const tail = s.list({ month: e.months.at(-1), mode: 'cross', limit: 20, span: 6 }, 'test');
     assert.equal(tail.spanMonths.length, 1);
     assert.equal(tail.rows.find(r => r.code === 'A').complete, false);
     // span 超过 6 被拒绝
     assert.throws(() => s.list({ month: m, mode: 'cross', limit: 20, span: 9 }, 'test'), /超出范围/);
+    // 独立编码（无上下级）在汇总表口径下不展示；表1预测/添加/剔除按数值输出
+    const data2 = C.sample();
+    data2.tables.attributes.push({ code: 'ISO', make_dept: '整机事业部', lead_mean: 1, lead_cv: .1 });
+    data2.tables.forecast.push({ code: 'ISO', plan_date: data2.tables.forecast[0].plan_date, month: m, qty: 7, site_code: 'S1' });
+    s.publish(data2, 1, 'test', 'test');
+    const withIso = s.list({ month: m, mode: 'cross', limit: 20 }, 'test');
+    assert.ok(withIso.rows.some(r => r.code === 'ISO'));
+    const linked = s.list({ month: m, mode: 'cross', limit: 20, linked: 1 }, 'test');
+    assert.ok(!linked.rows.some(r => r.code === 'ISO'));
+    const dRow = linked.rows.find(r => r.code === 'D');
+    assert.equal(dRow.raw, 550); assert.equal(dRow.add, 0); assert.equal(dRow.remove, 0);
+    // 能计算出结果（数据完整）的编码排在前面
+    data2.tables.forecast = data2.tables.forecast.filter(r => !(r.code === 'A' && r.month === m));
+    s.publish(data2, 2, 'test', 'test');
+    const sorted = s.list({ month: m, mode: 'cross', limit: 20 }, 'test');
+    const firstIncomplete = sorted.rows.findIndex(r => !r.complete);
+    assert.ok(firstIncomplete === -1 || sorted.rows.slice(0, firstIncomplete).every(r => r.complete));
+    assert.ok(sorted.rows.some(r => !r.complete));
   } finally { s.store.close(); }
 });

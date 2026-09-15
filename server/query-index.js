@@ -1,7 +1,8 @@
 'use strict';
 const C = require('../forecast-core');
 const engines = new WeakMap();
-const compare = (a, b) => (b.gap ?? -Infinity) - (a.gap ?? -Infinity) || a.code.localeCompare(b.code);
+// 优先展示能计算出结果（数据完整）的编码，再按缺口降序
+const compare = (a, b) => Number(b.complete) - Number(a.complete) || (b.gap ?? -Infinity) - (a.gap ?? -Infinity) || a.code.localeCompare(b.code);
 function lru(map, key, value, limit) { if (map.has(key)) map.delete(key); map.set(key, value); if (map.size > limit) map.delete(map.keys().next().value); return value; }
 function summarize(rows, engine) {
   const dashboard = { total: rows.length, shortage: 0, coverageShortage: 0, single: 0, concentrated: 0, incomplete: 0, unknownSites: 0 };
