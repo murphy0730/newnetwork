@@ -16,7 +16,22 @@ class BuildJobs {
     this.sweep();
   }
   file(name, id) { if (!/^[a-f0-9-]{36}$/.test(id || '')) throw failure('无效任务标识'); return path.join(this.root, name, id + '.json'); }
-  write(filename, value) { fs.writeFileSync(filename + '.tmp', JSON.stringify(value)); fs.renameSync(filename + '.tmp', filename); }
+  write(filename, value) {
+    const temporary = filename + '.tmp';
+    fs.writeFileSync(temporary, JSON.stringify(value));
+    // Windows can briefly lock the destination while scanning a replaced file.
+    // Keep the previous complete JSON intact; retry only transient rename errors.
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(temporary, filename); return; }
+      catch (e) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code) || attempt === 4) {
+          try { fs.unlinkSync(temporary); } catch {}
+          throw e;
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * 2 ** attempt);
+      }
+    }
+  }
   persist(job) { job.updated_at = new Date().toISOString(); this.write(this.file('jobs', job.id), job); }
   cleanup(files) {
     const inUse = new Set([...this.jobs.values()].filter(j => j.status === 'running').flatMap(j => [...(j.resources || []), ...(j.outputs || [])]).map(f => path.resolve(f)));
@@ -40,9 +55,15 @@ class BuildJobs {
   create(actor, kind, run, resources = [], keepResourcesOnSuccess = false, outputs = []) {
     this.sweep(); if ([...this.jobs.values()].filter(j => j.status === 'running').length >= 8) { this.cleanup(resources); throw failure('已有8项后台任务，请稍后重试；本次暂存已释放', 429); }
     const job = { id: randomUUID(), actor, kind, status: 'running', phase: 'queued', message: '任务已排队，可继续查看当前版本', percent: 0, created_at: new Date().toISOString(), resources, outputs };
-    this.jobs.set(job.id, job); this.persist(job);
+    this.jobs.set(job.id, job);
+    try { this.persist(job); } catch (e) { this.jobs.delete(job.id); this.cleanup(resources); this.cleanup(outputs); throw e; }
     const progress = p => { if (job.status === 'running') { Object.assign(job, p); this.persist(job); } };
-    Promise.resolve().then(() => run(job, progress)).then(result => { if (job.status !== 'running') return; job.status = 'completed'; job.phase = 'completed'; job.percent = 100; job.result = result; this.persist(job); }).catch(e => { job.status = 'failed'; job.phase = 'failed'; job.error = { message: e.message, status: e.status || 500, details: e.details, code: e.code }; this.persist(job); }).finally(() => { if (!keepResourcesOnSuccess || job.status !== 'completed') this.cleanup(resources); if (job.status !== 'completed') this.cleanup(outputs); });
+    Promise.resolve().then(() => run(job, progress)).then(result => { if (job.status !== 'running') return; job.status = 'completed'; job.phase = 'completed'; job.percent = 100; job.result = result; this.persist(job); }).catch(e => {
+      // A completed activation must not be reported as a failed import merely
+      // because its task log could not be replaced after publication.
+      if (job.status !== 'completed') { job.status = 'failed'; job.phase = 'failed'; job.error = { message: e.message, status: e.status || 500, details: e.details, code: e.code }; }
+      try { this.persist(job); } catch (persistenceError) { job.persistenceError = { message: '任务记录保存失败，请检查磁盘空间及文件占用：' + persistenceError.message, code: persistenceError.code }; }
+    }).finally(() => { if (!keepResourcesOnSuccess || job.status !== 'completed') this.cleanup(resources); if (job.status !== 'completed') this.cleanup(outputs); });
     return { jobId: job.id, status: 'running', poll: '/api/jobs/' + job.id };
   }
   public(job) {
@@ -75,16 +96,21 @@ class BuildJobs {
         const child = fork(path.join(__dirname, 'build.js'), [], { windowsHide: true, execArgv: ['--max-old-space-size=' + heap], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
         this.children.set(job.id, child); let output = '', message, childError;
         child.stderr.on('data', b => { output = (output + b).slice(-4000); });
-        child.on('message', m => { if (m.progress) progress(m.progress); else message = m; });
+        child.on('message', m => {
+          if (childError) return;
+          if (!m.progress) { message = m; return; }
+          try { progress(m.progress); }
+          catch (e) { childError = e; child.kill(); }
+        });
         child.on('error', e => { childError = e; reject(e); });
         child.on('exit', (code, signal) => {
           this.children.delete(job.id);
           // Do not overlap two multi-GB builders: their heap is released on exit,
           // not when the result message happens to reach the HTTP process.
-          if (childError) return;
+          if (childError) return reject(childError);
           if (job.status !== 'running') return reject(failure('构建已取消', 409));
           const issues = message?.result?.issues || message?.error?.issues;
-          if (issues) { job.issues = issues; this.persist(job); }
+          if (issues) { job.issues = issues; try { this.persist(job); } catch (e) { return reject(e); } }
           if (message?.error) return reject(Object.assign(Error(message.error.message), message.error));
           if (code === 0 && message && Object.hasOwn(message, 'result')) return resolve(message.result);
           reject(failure(`构建进程退出（${signal || code}）。当前版本保留；请检查内存/磁盘或拆分文件重试。${/heap out of memory|Allocation failed/i.test(output) ? ' 构建进程内存不足，可调整BUILD_HEAP_MB。' : ''}`, 500));

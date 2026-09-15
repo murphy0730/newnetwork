@@ -13,6 +13,7 @@ tests/*
 !tests/benchmark.js
 !tests/browser.js
 !tests/build-browser.js
+!tests/adjust-import-browser.js
 !tests/ui-browser.js
 !tests/response-benchmark.js
 *.log
