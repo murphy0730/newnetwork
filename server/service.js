@@ -159,26 +159,34 @@ class Service {
     return this.metaCache;
   }
   list(q, actor) {
+    if (String(q.summary) === '1' && q.role === 'demand') throw error('供应汇总表暂不支持需求方视角，请切换为供应方');
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [] };
+    if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'industry-block-root-v1' });
     const span = int(q.span, 1, 1, 6), spanMonths = engine.months.slice(engine.months.indexOf(month), engine.months.indexOf(month) + span);
-    const indexed = Query.view(engine, month, mode, source);
+    const indexed = String(q.summary) === '1' ? require('./supply-summary').view(engine, month, mode, source) : Query.view(engine, month, mode, source);
     let input = indexed.rows;
+    if (q.code && q.role !== 'demand') {
+      if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
+      input = input.filter(r => r.code === q.code);
+    }
     if (q.role === 'demand' && q.code) {
       if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
       input = Query.dependencies(engine, q.code, month, mode, source).sort(Query.compare);
     }
-    // 汇总表不展示无上下级的独立编码（graph.parents/children 均为空）
+    // 兼容显式 linked 查询；供应汇总表默认包含全部编码。
     if (q.linked) input = input.filter(r => engine.graph.parents.get(r.code).length > 0 || engine.graph.children.get(r.code).length > 0);
     // 汇总卡片随维度筛选（加工地/产业/大类/搜索/角色）联动；不随风险筛选变化，否则点选某风险卡后其他卡片会归零
     const dimensioned = Query.filter(indexed, { ...q, risk: '' }, engine, input);
     const dashboard = Query.summarize(dimensioned, engine);
     const rows = Query.filter(indexed, q, engine, input);
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
-    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月滚动匹配；KPI卡片与筛选仍按起始月口径。` : '') };
+    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1')), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月滚动匹配；KPI卡片与筛选仍按起始月口径。` : '') };
   }
   // 汇总表行：单月直接输出；多月（最多6个月）按累计供需 + 库存滚动水位聚合，并识别跨产业首个编码及其产业
-  summaryRow(engine, r, month, span, spanMonths, mode, source) {
-    const base = this.compact(r), cross = engine.relations(r.code, 'cross').filter(x => x.kind === '跨产业首个编码').map(x => ({ code: x.code, make_dept: engine.attributes.get(x.code)?.make_dept || '' }));
+  summaryRow(engine, r, month, span, spanMonths, mode, source, summary = false) {
+    const base = this.compact(r);
+    if (summary) return require('./supply-summary').decorate(engine, base, month, span, spanMonths, mode, source);
+    const cross = engine.relations(r.code, 'cross').filter(x => x.kind === '跨产业首个编码').map(x => ({ code: x.code, make_dept: engine.attributes.get(x.code)?.make_dept || '' }));
     base.cross = cross.slice(0, 50); base.crossCount = cross.length;
     if (span <= 1) return base;
     const rows = spanMonths.map(m => engine.row(r.code, m, mode, source));
