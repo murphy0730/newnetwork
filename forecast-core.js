@@ -304,11 +304,12 @@
         result.set(code, { code, attr, ...own, complete, demand, knownDemand, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
         if (saved) continue;
         // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项（子项仅下达自身预测）
+        // 剔除超过预测时净需求为负，负值视为父项的消耗缺口，按绝对值向子项传导需求（净需求本身保留符号用于展示）
         const noParents = !this.graph.parents.get(code).length;
         for (const edge of this.graph.children.get(code)) {
           const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
           const originate = mode === 'direct' || crossEdge || noParents;
-          const outgoing = originate ? (net.demand || 0) : knownDemand;
+          const outgoing = originate ? Math.abs(net.demand || 0) : knownDemand;
           const outgoingKnown = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : incomingKnown.get(code) !== false;
           const val = (incoming.get(edge.child) || 0) + outgoing * edge.qty;
           if (!Number.isFinite(val)) throw Error('BOM累计需求超出计算范围'); incoming.set(edge.child, val);
@@ -332,7 +333,7 @@
     downstream(root, month, mode) {
       const all = this.compute(month, mode), amounts = new Map([[root, 1]]), out = [];
       for (const c of this.graph.order) if (amounts.has(c)) {
-        if (c !== root) out.push({ ...all.get(c), contribution: this.net(root, month).demand == null ? null : this.net(root, month).demand * amounts.get(c), coeff: amounts.get(c) });
+        if (c !== root) out.push({ ...all.get(c), contribution: this.net(root, month).demand == null ? null : Math.abs(this.net(root, month).demand) * amounts.get(c), coeff: amounts.get(c) });
         if (c !== root && (mode === 'direct' || (mode === 'cross' && !this.sameIndustry(c, root)))) continue;
         // Inspect dependency risk even when the selected material is not a frontier object.
         // Its own folded quantity is a reference, not an allocation of the lower material's gap.

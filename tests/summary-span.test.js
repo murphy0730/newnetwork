@@ -76,3 +76,26 @@ test('summary table aggregates up to 6 months with rolling inventory and cross-i
     assert.ok(sorted.rows.some(r => !r.complete));
   } finally { s.store.close(); }
 });
+
+test('removal exceeding forecast propagates the deficit as positive demand on children', () => {
+  // 用户示例：A为子项，B为父项；B预测600、使用剔除2000 → 净需求-1400，缺口1400仍以正向拉动A
+  const s = C.empty(), m = '2026-09', v = '2026-08-24'; s.kind = 'imported'; s.config.input_mode = 'raw';
+  s.tables.attributes.push({ code: 'A', make_dept: 'X', lead_mean: 1, lead_cv: .1 }, { code: 'B', make_dept: 'X', lead_mean: 1, lead_cv: .1 });
+  s.tables.forecast.push({ code: 'A', plan_date: v, month: m, qty: 1074, site_code: 'S' }, { code: 'B', plan_date: v, month: m, qty: 600, site_code: 'S' });
+  s.tables.bom.push({ id: '1', parent: 'B', child: 'A', qty: 1 });
+  s.tables.adjust.push({ direction: '供应', code: 'A', purchase_code: 'P', month: m, qty: 50 }, { direction: '使用', code: 'B', purchase_code: '', month: m, qty: 2000 });
+  const e = new C.Engine(s);
+  assert.equal(e.net('B', m).demand, -1400); // 净需求保留符号，仅用于展示
+  const a = e.compute(m, 'direct').get('A');
+  assert.equal(a.supply, 1124); assert.equal(a.demand, 1400); assert.equal(a.gap, 276);
+  assert.equal(e.downstream('B', m, 'direct').find(r => r.code === 'A').contribution, 1400);
+  const svc = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-deficit-')), 't.sqlite'));
+  try {
+    svc.publish(s, 0, 'test', 'test');
+    for (const mode of ['direct', 'top']) {
+      const row = svc.list({ summary: 1, month: m, mode, code: 'A' }, 'test').rows[0];
+      assert.equal(row.raw, 1074); assert.equal(row.add, 50); assert.equal(row.supply, 1124);
+      assert.equal(row.demand, 1400); assert.equal(row.gap, 276);
+    }
+  } finally { svc.store.close(); }
+});

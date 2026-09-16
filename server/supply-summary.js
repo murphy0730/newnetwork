@@ -48,7 +48,7 @@ function view(engine, month, mode, source) {
       for (const edge of parents) {
         const sameDept = engine.sameIndustry(edge.parent, code);
         const net = sameDept ? null : engine.net(edge.parent, month);
-        const p = sameDept ? external.get(edge.parent) : { amount: net.demand || 0, known: net.known && engine.dept(edge.parent) != null, applicable: true };
+        const p = sameDept ? external.get(edge.parent) : { amount: Math.abs(net.demand || 0), known: net.known && engine.dept(edge.parent) != null, applicable: true };
         cross.amount += p.amount * edge.qty;
         cross.known &&= p.known && engine.dept(code) != null;
         cross.applicable ||= !sameDept || p.applicable;
@@ -63,7 +63,7 @@ function view(engine, month, mode, source) {
       const total = { amount: 0, known: true };
       for (const edge of engine.graph.parents.get(code)) {
         const net = engine.net(edge.parent, month);
-        const p = mode === 'direct' || !engine.graph.parents.get(edge.parent).length ? { amount: net.demand || 0, known: net.known } : totals.get(edge.parent);
+        const p = mode === 'direct' || !engine.graph.parents.get(edge.parent).length ? { amount: Math.abs(net.demand || 0), known: net.known } : totals.get(edge.parent);
         total.amount += p.amount * edge.qty; total.known &&= p.known;
       }
       if (!Number.isFinite(total.amount)) throw Error('BOM累计需求超出计算范围');
@@ -86,7 +86,7 @@ function relations(engine, code, mode) {
 function decorate(engine, base, month, span, months, mode, source, periodMode = 'individual') {
   const links = relations(engine, base.code, mode);
   const targets = links.map(link => ({ ...link, make_dept: engine.dept(link.code) || '',
-    monthly: months.map(m => { const net = engine.net(link.code, m); return { month: m, forecast: net.raw, remove: net.remove, netDemand: net.demand, demand: net.demand == null ? null : net.demand * link.coeff }; }) }));
+    monthly: months.map(m => { const net = engine.net(link.code, m); return { month: m, forecast: net.raw, remove: net.remove, netDemand: net.demand, demand: net.demand == null ? null : Math.abs(net.demand) * link.coeff }; }) }));
   const applicable = targets.length > 0;
   const monthSet = new Set(engine.months);
   const monthly = months.map((m, i) => {

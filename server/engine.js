@@ -38,7 +38,7 @@ class Engine extends C.Engine {
       for (const edge of this.graph.children.get(code)) {
         const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
         const originate = mode === 'direct' || crossEdge || noParents;
-        const outgoing = originate ? (net.demand || 0) : numeric[i * 2];
+        const outgoing = originate ? Math.abs(net.demand || 0) : numeric[i * 2];
         const known = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : !unknown[i];
         const j = this.orderIndex.get(edge.child), value = numeric[j * 2] + outgoing * edge.qty;
         if (!Number.isFinite(value)) throw Error('BOM累计需求超出计算范围');

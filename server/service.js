@@ -200,7 +200,7 @@ class Service {
   detail(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), code = q.code;
     if (!e.orderIndex.has(code)) throw error('编码不存在', 404);
-    const row = e.row(code, month, mode, source), targets = e.relations(code, mode).map(r => { const net = e.net(r.code, month); return { ...r, forecast: net.raw, remove: net.remove, known: net.known, demand: net.demand == null ? null : net.demand * r.coeff, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
+    const row = e.row(code, month, mode, source), targets = e.relations(code, mode).map(r => { const net = e.net(r.code, month); return { ...r, forecast: net.raw, remove: net.remove, known: net.known, demand: net.demand == null ? null : Math.abs(net.demand) * r.coeff, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
     const paths = e.paths(code, month, mode, source), details = e.months.map(m => { const r = e.row(code, m, mode, source); return { month: m, raw: r.raw, add: r.add, remove: r.remove, ...this.compact(r) }; });
     return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, source: r._source })) };
   }

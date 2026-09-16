@@ -15,7 +15,7 @@ function insights(service, q, actor) {
   if (cache.has(key)) return { ...Query.lru(cache, key, cache.get(key), 32), trace, cache: { hit: true } };
   const row = e.row(code, month, mode, source), hasParents = e.graph.parents.get(code).length > 0;
   const scopeComparison = ['direct', 'cross', 'top'].map(scope => { const r = e.row(code, month, scope, source); return { mode: scope, label: names[scope], supply: r.supply, demand: r.demand, gap: r.gap, complete: r.complete, applicable: hasParents }; });
-  const targets = e.relations(code, mode).map(rel => { const net = e.net(rel.code, month); return { ...rel, name: e.attributes.get(rel.code)?.name || '', make_dept: e.attributes.get(rel.code)?.make_dept || '', forecast: net.raw, netUsage: net.demand, contribution: net.demand == null ? null : net.demand * rel.coeff, known: net.known }; });
+  const targets = e.relations(code, mode).map(rel => { const net = e.net(rel.code, month); return { ...rel, name: e.attributes.get(rel.code)?.name || '', make_dept: e.attributes.get(rel.code)?.make_dept || '', forecast: net.raw, netUsage: net.demand, contribution: net.demand == null ? null : Math.abs(net.demand) * rel.coeff, known: net.known }; });
   targets.sort((a, b) => (b.contribution ?? -Infinity) - (a.contribution ?? -Infinity) || a.code.localeCompare(b.code));
   const contributionTotal = targets.reduce((sum, r) => sum + (r.contribution || 0), 0), targetsKnown = targets.every(r => r.known);
   const lower = Query.dependencies(e, code, month, mode, source), shortages = lower.filter(r => r.gap > C.EPS).sort(Query.compare), unknownLower = lower.filter(r => !r.complete);
