@@ -46,9 +46,11 @@ test('selected graphs stay sparse; sorting/filter cache respects source, scope, 
   } finally { s.store.close(); }
 });
 
-test('trusted quantity overlays preserve raw preprocessing validation without rebuilding the BOM', () => {
+test('trusted quantity overlays skip structural validation without rebuilding the BOM', () => {
   const data = C.sample(); data.config.input_mode = 'raw'; const r = data.tables.forecast[0]; data.tables.adjust = [{ code: r.code, direction: '使用', month: r.month, qty: 10 }];
-  assert.throws(() => changesFor(data, { changes: [{ code: r.code, month: r.month, operation: 'set', value: 5 }] }, r.plan_date, true), /使用剔除/);
+  // 表2剔除量与表1预测相互独立：推演把预测调到低于剔除量也不再拦截
+  const reduced = changesFor(data, { changes: [{ code: r.code, month: r.month, operation: 'set', value: 5 }] }, r.plan_date, true);
+  assert.equal(reduced.tables.forecast.find(x => x.code === r.code && x.month === r.month).qty, 5);
   const validate = C.validate; C.validate = () => { throw Error('unnecessary structural validation'); };
   try { const next = changesFor(data, { changes: [{ code: r.code, month: r.month, operation: 'add', value: 1 }] }, r.plan_date, true); assert.equal(next.tables.bom, data.tables.bom); assert.notEqual(next.tables.forecast, data.tables.forecast); } finally { C.validate = validate; }
 });

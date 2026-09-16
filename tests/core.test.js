@@ -38,8 +38,8 @@ test('inventory snapshot exclusions and cumulative inventory counted once', () =
 test('risk paths include non-critical branches; missing cycle data never means zero duration', () => {
   const { s, m } = example(); s.tables.attributes.push({ code: 'E', make_dept: '基础制造部', lead_mean: 1, lead_cv: .8 }); s.tables.bom.push({ parent: 'B', child: 'E', qty: 1 }); s.tables.forecast.push({ code: 'E', plan_date: C.today(), month: m, qty: 0, site_code: 'S5' }); let e = new C.Engine(s), p = e.paths('B', m, 'cross'); assert.deepEqual(p.critical.path, ['B', 'A', 'D']); assert.ok(p.edges.some(r => r.child === 'E')); delete s.tables.attributes.find(r => r.code === 'E').lead_mean; e = new C.Engine(s); assert.equal(e.criticalCache.get('B').complete, false);
 });
-test('preprocessing only applies in raw mode and negative net demand is rejected', () => {
-  const { s, m } = example(); s.tables.adjust = [{ direction: '供应', code: 'A', purchase_code: 'P', month: m, qty: 200 }, { direction: '使用', code: 'B', purchase_code: '', month: m, qty: 50 }]; assert.equal(new C.Engine(s).compute(m).get('A').gap, 100); s.config.input_mode = 'raw'; const a = new C.Engine(s).compute(m).get('A'); assert.equal(a.supply, 1200); assert.equal(a.demand, 1000); s.tables.adjust[1].qty = 10000; assert.ok(C.validate(s).errors.length);
+test('preprocessing only applies in raw mode and removal is independent of forecast', () => {
+  const { s, m } = example(); s.tables.adjust = [{ direction: '供应', code: 'A', purchase_code: 'P', month: m, qty: 200 }, { direction: '使用', code: 'B', purchase_code: '', month: m, qty: 50 }]; assert.equal(new C.Engine(s).compute(m).get('A').gap, 100); s.config.input_mode = 'raw'; const a = new C.Engine(s).compute(m).get('A'); assert.equal(a.supply, 1200); assert.equal(a.demand, 1000); s.tables.adjust[1].qty = 10000; assert.equal(C.validate(s).errors.length, 0); const nb = new C.Engine(s).net('B', m); assert.equal(nb.demand, nb.raw - 10000); assert.ok(nb.demand < 0);
 });
 test('forecast changes preserve baseline, additive and percentage math, zero quality scenario stable', () => {
   const { s, e, m, v } = example(), before = JSON.stringify(s);

@@ -42,7 +42,7 @@ test('first template import over demo data preserves the selected raw input mode
   } finally { artifact.close(); }
 });
 
-test('preserved raw mode validates excessive removal; direct preview and commit retain mode as well', async t => {
+test('preserved raw mode accepts removal exceeding forecast; direct preview and commit retain mode as well', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'table2-raw-')), service = new Service(path.join(dir, 'test.sqlite'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const seed = D.demo(); seed.config.input_mode = 'raw';
@@ -50,9 +50,11 @@ test('preserved raw mode validates excessive removal; direct preview and commit 
     service.publish(seed, 0, 'test', 'sample');
     const template = D.templateSample(), batches = Object.entries(template.tables).map(([table, rows]) => ({ table, rows }));
     const body = { baseRevision: 1, batches };
+    // 使用剔除为独立人工维护量，大于原预测（甚至预测为0）不再拦截导入与预览
     template.tables.adjust.find(r => r.direction === '使用').qty = 99999;
-    assert.throws(() => service.preview(body, 'test'), /关联校验失败/);
-    await assert.rejects(run({ base: { dbPath: service.store.path }, body, output: path.join(dir, 'invalid.supply') }), e => e.details.some(r => r.message.includes('剔除量大于')));
+    assert.ok(service.preview(body, 'test').previewId);
+    const built = await run({ base: { dbPath: service.store.path }, body, output: path.join(dir, 'excessive.supply') });
+    assert.ok(fs.existsSync(built.path));
     template.tables.adjust.find(r => r.direction === '使用').qty = 20;
     const preview = service.preview(body, 'test'); service.commit({ previewId: preview.previewId }, 'test');
     assert.equal(service.meta('test').config.input_mode, 'raw');

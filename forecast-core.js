@@ -192,12 +192,7 @@
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && r.site_name)) warnings.push('部分加工地只有名称，将按名称临时识别；建议补加工地代码');
     if (!t.inventory.length) warnings.push('尚无库存快照，仅能计算预测匹配；库存覆盖结果显示未知');
     if (snapshot.config.input_mode === 'net' && t.adjust.length) warnings.push('当前按已预处理净预测分析，表2不再重复应用');
-    if (snapshot.config.input_mode === 'raw') {
-      const totals = new Map();
-      for (const r of t.forecast) { const k = JSON.stringify([r.plan_date, r.code, r.month]); totals.set(k, (totals.get(k) || 0) + r.qty); }
-      const uses = new Map(); for (const r of t.adjust.filter(r => r.direction === '使用')) { const k = JSON.stringify([r.code, r.month]); uses.set(k, (uses.get(k) || 0) + r.qty); }
-      for (const [k, v] of totals) { const [, c, m] = JSON.parse(k); if ((uses.get(JSON.stringify([c, m])) || 0) > v + EPS) errors.push({ field: '使用剔除', message: `${c} ${m}剔除量大于该版本原预测，请检查预处理口径` }); }
-    }
+    // 表2供应添加/使用剔除为人工维护量，与表1预测相互独立：即使某月预测为0也允许剔除，不做拦截。
     return { errors, warnings };
   }
   function prepare(current, batches) {

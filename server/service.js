@@ -74,14 +74,8 @@ function changesFor(base, body, version, trusted = false) {
   } else throw error('未知推演类型');
   // Only quantities/dates change on a validated immutable baseline. Rebuilding
   // the entire BOM for each what-if cannot discover a new structural error.
-  if (trusted) {
-    if (base.config.input_mode === 'raw') {
-      const uses = new Map(), totals = new Map();
-      for (const r of base.tables.adjust) if (r.direction === '使用') { const key = JSON.stringify([r.code, r.month]); uses.set(key, (uses.get(key) || 0) + r.qty); }
-      for (const r of next.tables.forecast) if (r.plan_date === version) { const key = JSON.stringify([r.code, r.month]); if (uses.has(key)) totals.set(key, (totals.get(key) || 0) + r.qty); }
-      for (const [key, qty] of totals) if (uses.get(key) > qty + C.EPS) throw error('推演后的预测小于使用剔除量，请检查原始预测预处理口径', 422);
-    }
-  } else { const validation = C.validate(next); if (validation.errors.length) throw error('推演数据校验失败', 422, validation.errors.slice(0, 100)); }
+  // 表2剔除量与预测相互独立，可信推演不再复核剔除量与预测的大小关系。
+  if (!trusted) { const validation = C.validate(next); if (validation.errors.length) throw error('推演数据校验失败', 422, validation.errors.slice(0, 100)); }
   return next;
 }
 class Service {
