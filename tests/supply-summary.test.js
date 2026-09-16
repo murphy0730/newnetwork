@@ -187,16 +187,18 @@ test('individual months include inventory only in the selected first month; cumu
   for (const periodMode of ['individual', 'cumulative']) assert.throws(() => s.list({ ...q, span: 7, periodMode }, 'test'), /超出范围/);
 }));
 
-test('calendar months are never skipped; cumulative missing data is unknown and year ranges are explicit', () => serviceTest(s => {
+test('calendar months are never skipped; covered months without records count as zero and year ranges are explicit', () => serviceTest(s => {
   const data = fixture(); data.tables.forecast = data.tables.forecast.filter(r => r.month !== '2026-10');
   s.publish(data, 1, 'test', 'test');
   const result = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'individual' }, 'test');
   assert.deepEqual(result.spanMonths, ['2026-09', '2026-10', '2026-11']);
-  const rows = result.rows[0].periods; assert.equal(rows[1].complete, false); assert.equal(rows[1].supply, null); assert.equal(rows[1].gap, null); assert.equal(rows[1].inventory, null); assert.equal(rows[1].inventoryIncluded, false); assert.equal(rows[2].complete, true);
+  // 2026-10 在版本覆盖范围内但无任何预测记录 → 按0计入而非未知
+  const rows = result.rows[0].periods; assert.equal(rows[1].complete, true); assert.equal(rows[1].supply, 0); assert.equal(rows[1].demand, 0); assert.equal(rows[1].gap, 0); assert.equal(rows[1].inventory, null); assert.equal(rows[1].inventoryIncluded, false); assert.equal(rows[2].complete, true);
   const combined = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test').rows[0].periods[0];
-  assert.equal(combined.complete, false); assert.equal(combined.supply, null); assert.equal(combined.demand, null); assert.equal(combined.coverageGap, null);
+  assert.equal(combined.complete, true); assert.equal(combined.supply, 1300); assert.equal(combined.demand, 680); assert.equal(combined.coverageGap, -650);
   const crossYear = s.list({ ...q, month: '2026-12', mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test');
   assert.equal(crossYear.periods[0].label, '2026年12月-2027年2月');
+  // 版本未覆盖的月份（2027-03起）仍按数据不完整处理
   const tail = s.list({ ...q, month: '2027-02', mode: 'cross', span: 6, code: 'C', periodMode: 'individual' }, 'test');
   assert.equal(tail.rows[0].periods.length, 6); assert.equal(tail.rows[0].periods.at(-1).complete, false);
 }));

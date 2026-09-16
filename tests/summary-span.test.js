@@ -99,3 +99,24 @@ test('removal exceeding forecast propagates the deficit as positive demand on ch
     }
   } finally { svc.store.close(); }
 });
+
+test('cumulative span zero-fills codes without forecast records in a covered month', () => {
+  // A、B仅9月有预测；10月版本覆盖但两编码无记录 → 累计2个月时10月按0计入，而不是整行写“—”
+  const s = C.empty(), m = '2026-09', m2 = '2026-10', v = '2026-08-24'; s.kind = 'imported'; s.config.input_mode = 'raw';
+  s.tables.attributes.push({ code: 'A', make_dept: 'X', lead_mean: 1, lead_cv: .1 }, { code: 'B', make_dept: 'X', lead_mean: 1, lead_cv: .1 }, { code: 'Z', make_dept: 'X', lead_mean: 1, lead_cv: .1 });
+  s.tables.forecast.push({ code: 'A', plan_date: v, month: m, qty: 1074, site_code: 'S' }, { code: 'B', plan_date: v, month: m, qty: 600, site_code: 'S' }, { code: 'Z', plan_date: v, month: m2, qty: 5, site_code: 'S' });
+  s.tables.bom.push({ id: '1', parent: 'B', child: 'A', qty: 1 });
+  s.tables.adjust.push({ direction: '供应', code: 'A', purchase_code: 'P', month: m, qty: 50 }, { direction: '使用', code: 'B', purchase_code: '', month: m, qty: 2000 });
+  const svc = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-zerofill-')), 't.sqlite'));
+  try {
+    svc.publish(s, 0, 'test', 'test');
+    const cum = svc.list({ summary: 1, month: m, mode: 'direct', code: 'A', span: 2, periodMode: 'cumulative' }, 'test').rows[0];
+    assert.equal(cum.raw, 1074); assert.equal(cum.supply, 1124); assert.equal(cum.demand, 1400); assert.equal(cum.gap, 276); assert.equal(cum.complete, true);
+    const ind = svc.list({ summary: 1, month: m, mode: 'direct', code: 'A', span: 2, periodMode: 'individual' }, 'test').rows[0];
+    const oct = ind.periods[1];
+    assert.equal(oct.month, m2); assert.equal(oct.raw, 0); assert.equal(oct.supply, 0); assert.equal(oct.demand, 0); assert.equal(oct.gap, 0); assert.equal(oct.complete, true);
+    // 版本未覆盖的月份（11月）仍按数据不完整处理
+    const beyond = svc.list({ summary: 1, month: m, mode: 'direct', code: 'A', span: 3, periodMode: 'cumulative' }, 'test').rows[0];
+    assert.equal(beyond.complete, false); assert.equal(beyond.raw, null); assert.equal(beyond.demand, null);
+  } finally { svc.store.close(); }
+});
