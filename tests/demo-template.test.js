@@ -17,13 +17,16 @@ function decode(bytes) {
 }
 function scale(snapshot) {
   const g = C.topology(snapshot.tables);
-  assert.equal(g.codes.length, 240); assert.equal(Math.max(...g.level.values()) + 1, 5);
+  assert.equal(g.codes.length, 1004); assert.equal(Math.max(...g.level.values()) + 1, 7);
+  // 真实 DAG 特征：大量编码跨多层级归属（minLevel ≠ maxLevel，同一编码被不同层级的父项引用）
+  let multi = 0; for (const c of g.codes) if (g.minLevel.get(c) < g.level.get(c)) multi++;
+  assert.ok(multi > g.codes.length * 0.5, `multiLevel 占比应超过 50%，实际 ${(multi / g.codes.length * 100).toFixed(1)}%`);
   assert.equal(new Set(snapshot.tables.attributes.map(r => r.make_dept)).size, 12);
-  assert.equal(new Set(snapshot.tables.forecast.map(r => r.site_code)).size, 10);
+  assert.equal(new Set(snapshot.tables.forecast.map(r => r.site_code)).size, 58);
   assert.deepEqual(C.validate(snapshot).errors, []);
 }
 
-test('demo has 240 codes, twelve industries, ten sites and five BOM levels across loading and export', async () => {
+test('demo has 1004 codes with true DAG BOM (75% multi-level), twelve industries and seven BOM levels across loading and export', async () => {
   scale(D.demo());
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'demo-test-')), service = new Service(path.join(dir, 'test.sqlite'));
   try {
@@ -31,9 +34,9 @@ test('demo has 240 codes, twelve industries, ten sites and five BOM levels acros
     const exported = decode(service.export({ kind: 'sample' })); scale(exported);
     const e = new C.Engine(exported);
     assert.equal(e.months.length, 11);
-    for (const mode of ['direct', 'cross', 'top']) assert.equal(e.compute(e.months[0], mode).size, 240);
+    for (const mode of ['direct', 'cross', 'top']) assert.equal(e.compute(e.months[0], mode).size, 1004);
     const build = await run({ operation: 'sampleLarge', output: path.join(dir, 'demo.supply') });
-    assert.equal(build.manifest.codes, 240); assert.equal(build.manifest.counts.attributes, 240);
+    assert.equal(build.manifest.codes, 1004); assert.equal(build.manifest.counts.attributes, 1004);
   } finally { service.store.close(); }
 });
 
