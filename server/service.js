@@ -243,7 +243,7 @@ class Service {
       const rs = raw ? e.graph.parents.get(code).map(r => ({ code: r.parent, coeff: r.qty, kind: 'BOM' })) : e.relations(code, mode);
       for (const r of rs) if (visible.has(r.code)) links.push({ source: r.code, target: code, qty: r.coeff, kind: r.kind, critical: criticalEdges.has(JSON.stringify([r.code, code])), risk: riskEdges.has(JSON.stringify([r.code, code])) });
     }
-    return { trace, nodes: [...visible].map(code => ({ ...this.compact(e.row(code, month, mode, source)), level: e.graph.level.get(code), matched: matches.has(code) })), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
+    return { trace, nodes: [...visible].map(code => { const lv = e.graph.level.get(code), minLv = e.graph.minLevel?.get(code); return { ...this.compact(e.row(code, month, mode, source)), level: lv, minLevel: minLv ?? lv, parentCount: e.graph.parents.get(code).length, multiLevel: minLv != null && minLv < lv, matched: matches.has(code) }; }), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
   }
   report(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), indexed = Query.view(e, month, mode, source), rows = indexed.rows, sites = new Map();

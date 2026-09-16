@@ -155,7 +155,14 @@
     const order = [...codes].filter(c => !deg.get(c)), level = new Map(order.map(c => [c, 0]));
     for (let i = 0; i < order.length; i++) for (const r of children.get(order[i])) { level.set(r.child, Math.max(level.get(r.child) || 0, level.get(r.parent) + 1)); deg.set(r.child, deg.get(r.child) - 1); if (!deg.get(r.child)) order.push(r.child); }
     if (order.length !== codes.size) throw Error('BOM存在循环依赖：' + [...codes].filter(c => deg.get(c) > 0).slice(0, 12).join('、'));
-    return { codes: [...codes], parents, children, order, level };
+    // 最短路径深度：BOM 是 DAG 非树，同一编码可被多个不同层级的父项引用。
+    // level 取最长路径（最坏供应链深度），minLevel 取最短路径（最近一次被引用）。
+    // 二者不一致即表示该编码在 BOM 中跨越多个层级归属（multiLevel）。
+    const minLevel = new Map([...codes].map(c => [c, Infinity]));
+    for (const c of order) if (!parents.get(c).length) minLevel.set(c, 0);
+    for (const c of order) for (const r of children.get(c)) minLevel.set(r.child, Math.min(minLevel.get(r.child), minLevel.get(c) + 1));
+    for (const c of codes) if (!Number.isFinite(minLevel.get(c))) minLevel.set(c, 0);
+    return { codes: [...codes], parents, children, order, level, minLevel };
   }
   function validate(snapshot) {
     const errors = [], warnings = [], t = snapshot.tables;

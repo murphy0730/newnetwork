@@ -120,7 +120,12 @@ class Artifact {
       if (!parents.has(edge.child) || !children.has(edge.parent) || indices.get(edge.parent) >= indices.get(edge.child)) throw fail('产物BOM与拓扑序不一致');
       parents.get(edge.child).push(edge); children.get(edge.parent).push(edge);
     }
-    return this.loadedGraph = { graph: { codes, order, level, parents, children }, critical };
+    // 最短路径深度：与 forecast-core.topology() 保持一致，重建多层级归属（minLevel ≠ level 即跨多层）
+    const minLevel = new Map(codes.map(c => [c, Infinity]));
+    for (const code of order) if (!parents.get(code).length) minLevel.set(code, 0);
+    for (const code of order) for (const edge of children.get(code)) minLevel.set(edge.child, Math.min(minLevel.get(edge.child), minLevel.get(code) + 1));
+    for (const code of codes) if (!Number.isFinite(minLevel.get(code))) minLevel.set(code, 0);
+    return this.loadedGraph = { graph: { codes, order, level, minLevel, parents, children }, critical };
   }
   derived(version) {
     const materialized = new Map();
