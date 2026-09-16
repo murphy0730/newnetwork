@@ -58,7 +58,7 @@ class Engine extends C.Engine {
     const moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
     const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: C.siteSummary(moRows) } : net;
     const complete = !!numeric[index * 2 + 1], knownDemand = numeric[index * 2];
-    const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand - own.supply : null;
+    const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
     const snapshotDate = month + '-01', inventory = this.inventoryDates.has(snapshotDate) ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
     if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, C.siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
     const attr = this.attributes.get(code) || {}, risks = [];
@@ -78,7 +78,7 @@ class Engine extends C.Engine {
     const mo = source === 'mo' ? this.moByCodeMonth.get(JSON.stringify([code, month])) || [] : null;
     const supply = mo ? this.t.mo.length ? mo.reduce((s, r) => s + r.qty, 0) : null : net.supply;
     const demand = matrix[i * 2 + 1] ? matrix[i * 2] : null;
-    return { supply, demand, gap: demand != null && this.graph.parents.get(code).length ? demand - supply : null, single: mo ? C.siteSummary(mo).single : net.sites.single };
+    return { supply, demand, gap: demand != null && this.graph.parents.get(code).length ? demand + net.remove - supply : null, single: mo ? C.siteSummary(mo).single : net.sites.single };
   }
   compute(month, mode = 'cross', source = 'forecast') {
     const key = JSON.stringify([month, mode, source]);
@@ -110,10 +110,11 @@ class Engine extends C.Engine {
   cumulative(code, start, count, mode) {
     const startIndex = this.months.indexOf(start), months = this.months.slice(startIndex, startIndex + count), rows = months.map(m => this.row(code, m, mode));
     const complete = months.length === count && rows.every(r => r.complete), inv = rows[0]?.inventory;
-    const demand = complete ? rows.reduce((s, r) => s + r.demand, 0) : null, supply = complete ? rows.reduce((s, r) => s + r.supply, 0) : null;
+    const demand = complete ? rows.reduce((s, r) => s + r.demand, 0) : null, remove = complete ? rows.reduce((s, r) => s + r.remove, 0) : null, supply = complete ? rows.reduce((s, r) => s + r.supply, 0) : null;
     let water = inv, minWater = inv, firstShortage = null;
-    for (let i = 0; i < rows.length; i++) { const r = rows[i]; if (water == null || !r.complete) { water = null; minWater = null; continue; } water += r.supply - r.demand; minWater = Math.min(minWater, water); if (water < -C.EPS && !firstShortage) firstShortage = months[i]; }
-    return { months, complete, demand, supply, inventory: inv, gap: complete ? demand - supply : null, coverageGap: complete && inv != null ? demand - supply - inv : null, firstShortage, minWater: complete ? minWater : null };
+    for (let i = 0; i < rows.length; i++) { const r = rows[i]; if (water == null || !r.complete) { water = null; minWater = null; continue; } water += r.supply - r.demand - r.remove; minWater = Math.min(minWater, water); if (water < -C.EPS && !firstShortage) firstShortage = months[i]; }
+    const total = complete ? demand + remove : null;
+    return { months, complete, demand, supply, inventory: inv, gap: complete ? total - supply : null, coverageGap: complete && inv != null ? total - supply - inv : null, firstShortage, minWater: complete ? minWater : null };
   }
 }
 module.exports = Engine;

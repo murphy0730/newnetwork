@@ -288,7 +288,8 @@
         const net = this.net(code, month), moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
         const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: siteSummary(moRows) } : net;
         const complete = saved ? !!saved[index * 2 + 1] : own.supply != null && (incomingKnown.get(code) !== false);
-        const knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0, demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand - own.supply : null;
+        // 缺口把自身使用剔除计入需求侧：缺口 = 上层需求 + 使用剔除 − 净供应（等价于剔除先扣减自身可用量）
+        const knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0, demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
         if (!saved) { numeric[index * 2] = knownDemand; numeric[index * 2 + 1] = Number(complete); }
         const snapshotDate = month + '-01', inventory = this.inventoryDates.has(snapshotDate) ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
         if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
@@ -352,10 +353,11 @@
     cumulative(code, start, count, mode) {
       const startIndex = this.months.indexOf(start), months = this.months.slice(startIndex, startIndex + count), rows = months.map(m => this.compute(m, mode).get(code));
       const complete = months.length === count && rows.every(r => r.complete), inv = rows[0]?.inventory;
-      const demand = complete ? rows.reduce((s, r) => s + r.demand, 0) : null, supply = complete ? rows.reduce((s, r) => s + r.supply, 0) : null;
+      const demand = complete ? rows.reduce((s, r) => s + r.demand, 0) : null, remove = complete ? rows.reduce((s, r) => s + r.remove, 0) : null, supply = complete ? rows.reduce((s, r) => s + r.supply, 0) : null;
       let water = inv, minWater = inv, firstShortage = null;
-      for (let i = 0; i < rows.length; i++) { const r = rows[i]; if (water == null || !r.complete) { water = null; minWater = null; continue; } water += r.supply - r.demand; minWater = Math.min(minWater, water); if (water < -EPS && !firstShortage) firstShortage = months[i]; }
-      return { months, complete, demand, supply, inventory: inv, gap: complete ? demand - supply : null, coverageGap: complete && inv != null ? demand - supply - inv : null, firstShortage, minWater: complete ? minWater : null };
+      for (let i = 0; i < rows.length; i++) { const r = rows[i]; if (water == null || !r.complete) { water = null; minWater = null; continue; } water += r.supply - r.demand - r.remove; minWater = Math.min(minWater, water); if (water < -EPS && !firstShortage) firstShortage = months[i]; }
+      const total = complete ? demand + remove : null;
+      return { months, complete, demand, supply, inventory: inv, gap: complete ? total - supply : null, coverageGap: complete && inv != null ? total - supply - inv : null, firstShortage, minWater: complete ? minWater : null };
     }
   }
   function sample() {

@@ -120,3 +120,29 @@ test('cumulative span zero-fills codes without forecast records in a covered mon
     assert.equal(beyond.complete, false); assert.equal(beyond.raw, null); assert.equal(beyond.demand, null);
   } finally { svc.store.close(); }
 });
+
+test('own usage removal counts on the demand side of the gap: B gap = 上层需求 + 剔除 − 供应 − 库存', () => {
+  // 用户示例：A←B←C1/C2 配比均1:1；B预测600、使用剔除2000、库存490；C1预测2000、C2预测50
+  // B库存后缺口 = 2050 + 2000 − 600 − 490 = 2960（旧口径960漏掉了B自身被剔除的消耗）
+  const s = C.empty(), m = '2026-09', v = '2026-08-24'; s.kind = 'imported'; s.config.input_mode = 'raw';
+  for (const [code, qty] of [['A', 1074], ['B', 600], ['C1', 2000], ['C2', 50]]) {
+    s.tables.attributes.push({ code, make_dept: 'X', lead_mean: 1, lead_cv: .1 });
+    s.tables.forecast.push({ code, plan_date: v, month: m, qty, site_code: 'S' });
+  }
+  s.tables.bom.push({ id: '1', parent: 'B', child: 'A', qty: 1 }, { id: '2', parent: 'C1', child: 'B', qty: 1 }, { id: '3', parent: 'C2', child: 'B', qty: 1 });
+  s.tables.adjust.push({ direction: '供应', code: 'A', purchase_code: 'P', month: m, qty: 50 }, { direction: '使用', code: 'B', purchase_code: '', month: m, qty: 2000 });
+  s.tables.inventory.push({ id: 'B' + m, date: m + '-01', code: 'B', qty: 490, sub_type: '正常库存' });
+  const e = new C.Engine(s);
+  for (const mode of ['direct', 'cross', 'top']) {
+    const b = e.compute(m, mode).get('B');
+    assert.equal(b.demand, 2050, mode + '/demand'); assert.equal(b.supply, 600, mode + '/supply');
+    assert.equal(b.gap, 3450, mode + '/gap'); assert.equal(b.coverageGap, 2960, mode + '/coverageGap');
+  }
+  const svc = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-ownremove-')), 't.sqlite'));
+  try {
+    svc.publish(s, 0, 'test', 'test');
+    const row = svc.list({ summary: 1, month: m, mode: 'direct', code: 'B' }, 'test').rows[0];
+    assert.equal(row.demand, 2050); assert.equal(row.remove, 2000); assert.equal(row.supply, 600);
+    assert.equal(row.gap, 3450); assert.equal(row.inventory, 490); assert.equal(row.coverageGap, 2960);
+  } finally { svc.store.close(); }
+});

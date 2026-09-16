@@ -25,7 +25,8 @@ function sortSuppliers(rows, engine) {
 
 function replaceDemand(row, demand, applicable, known) {
   const complete = row.supply != null && known;
-  const gap = !applicable ? 0 : complete ? demand - row.supply : null;
+  // 使用剔除计入自身需求侧：缺口 = 上层需求 + 使用剔除 − 净供应
+  const gap = !applicable ? 0 : complete ? demand + (row.remove || 0) - row.supply : null;
   const risks = row.risks.filter(r => r !== '预测总量不足' && r !== '预测或产业数据不完整');
   if (!complete) risks.unshift('预测或产业数据不完整');
   if (gap > C.EPS) risks.unshift('预测总量不足');
@@ -97,7 +98,7 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
     const demand = applicable && demandKnown ? targets.reduce((sum, t) => sum + t.monthly[i].demand, 0) : null;
     if (demand != null && !Number.isFinite(demand)) throw Error('BOM累计需求超出计算范围');
     const complete = monthSet.has(m) && own.supply != null && demandKnown;
-    const gap = !applicable ? 0 : complete ? demand - own.supply : null;
+    const gap = !applicable ? 0 : complete ? demand + (own.remove || 0) - own.supply : null;
     const inventoryIncluded = periodMode === 'cumulative' || i === 0;
     const risks = own.risks.filter(r => r !== '预测总量不足' && r !== '预测或产业数据不完整');
     if (!complete) risks.unshift('预测或产业数据不完整');
@@ -106,12 +107,12 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
   });
   const complete = months.length === span && monthly.every(r => r.complete);
   const sum = key => monthly.every(r => r[key] != null) && months.length === span ? monthly.reduce((s, r) => s + r[key], 0) : null;
-  const supply = sum('supply'), demand = applicable ? sum('demand') : null;
-  const gap = !applicable ? 0 : complete ? demand - supply : null;
+  const supply = sum('supply'), demand = applicable ? sum('demand') : null, removeSum = applicable ? sum('remove') : null;
+  const gap = !applicable ? 0 : complete ? demand + (removeSum || 0) - supply : null;
   const inventory = monthly[0]?.inventory ?? null;
   let water = inventory, firstShortage = null;
   if (applicable) for (const r of monthly) {
-    water = water != null && r.complete ? water + r.supply - r.demand : null;
+    water = water != null && r.complete ? water + r.supply - r.demand - (r.remove || 0) : null;
     if (water != null && water < -C.EPS && !firstShortage) firstShortage = r.month;
   }
   const periodSites = C.siteSummary(monthly.flatMap(r => r.sites.map(site => ({ qty: site.qty, site_code: site.code, site_name: site.name }))), monthly.reduce((sum, r) => sum + r.unassigned, 0));
