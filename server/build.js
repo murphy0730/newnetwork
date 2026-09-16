@@ -95,8 +95,13 @@ if (require.main === module) {
   if (process.send) process.once('message', async spec => {
     let last = 0, phase;
     const progress = p => { if (p.phase !== phase || Date.now() - last > 250 || p.percent === 95) { last = Date.now(); phase = p.phase; process.send({ progress: p }); } };
-    try { const result = await run(spec, progress); process.send({ result }, () => process.disconnect()); }
-    catch (e) { process.send({ error: { message: e.message, status: e.status || 422, details: e.details, code: e.code, issues: e.issues } }, () => process.disconnect()); }
+    try { const result = await run(spec, progress); process.send({ result }); }
+    catch (e) { process.send({ error: { message: e.message, status: e.status || 422, details: e.details, code: e.code, issues: e.issues } }); }
+    // 不自行 disconnect/exit：由父进程在收到 result/error 后断开 IPC（见 build-jobs.js child()）。
+    // 关键：父进程 disconnect 时立即退出；同时保留一个非 unref 的兜底定时器，
+    // 确保事件循环存活到结果消息被父进程真正读取，规避 Windows 下"发送后立即退出"丢消息的竞态。
+    process.on('disconnect', () => process.exit(0));
+    setTimeout(() => process.exit(0), 30000);
   });
   else cli().catch(e => { console.error(JSON.stringify({ error: e.message, details: e.details, issues: e.issues })); process.exitCode = 1; });
 }

@@ -98,7 +98,7 @@ class BuildJobs {
         child.stderr.on('data', b => { output = (output + b).slice(-4000); });
         child.on('message', m => {
           if (childError) return;
-          if (!m.progress) { message = m; return; }
+          if (!m.progress) { message = m; if (m.result || m.error) child.disconnect(); return; }
           try { progress(m.progress); }
           catch (e) { childError = e; child.kill(); }
         });
