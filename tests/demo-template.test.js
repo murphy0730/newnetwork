@@ -56,3 +56,40 @@ test('each standalone template contains exactly three valid examples and a guide
   for (const table of Object.keys(C.schemas)) assert.equal(imported.manifest.counts[table], 3, table);
   assert.throws(() => I.workbook(C.empty(), true, '__proto__'), /表名无效/);
 });
+
+test('demo table2 covers exactly 100 codes uniformly across actual BOM levels and applies after persisted loading', () => {
+  const snapshot = D.demo(), graph = C.topology(snapshot.tables), adjustments = snapshot.tables.adjust;
+  const selected = new Set(adjustments.map(r => r.code)), months = [...new Set(snapshot.tables.forecast.map(r => r.month))].sort();
+  assert.equal(snapshot.config.input_mode, 'raw');
+  assert.equal(selected.size, 100); assert.equal(adjustments.length, 100 * 11 * 2);
+  const counts = new Map();
+  for (const code of selected) counts.set(graph.level.get(code), (counts.get(graph.level.get(code)) || 0) + 1);
+  assert.deepEqual([...counts].sort((a, b) => a[0] - b[0]).map(([level, count]) => [level + 1, count]), [[1, 15], [2, 15], [3, 14], [4, 14], [5, 14], [6, 14], [7, 14]]);
+  const engine = new C.Engine(snapshot);
+  for (const code of selected) for (const month of months) {
+    const rows = adjustments.filter(r => r.code === code && r.month === month), net = engine.net(code, month);
+    assert.equal(rows.length, 2);
+    assert.ok(rows.find(r => r.direction === '供应').purchase_code);
+    assert.equal(rows.find(r => r.direction === '使用').purchase_code, '');
+    assert.ok(net.add > 0 && net.remove > 0 && net.remove <= net.raw);
+    assert.equal(net.supply, net.raw + net.add); assert.equal(net.demand, net.raw - net.remove);
+  }
+  const exportedAdjustments = decode(I.workbook(snapshot)).tables.adjust;
+  assert.equal(exportedAdjustments.length, adjustments.length);
+  exportedAdjustments.forEach(({ _source, _extra, ...row }, i) => assert.deepEqual(row, adjustments[i]));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'demo-adjust-')), db = path.join(dir, 'test.sqlite');
+  let service = new Service(db);
+  try {
+    service.sampleLarge({ baseRevision: 0 }, 'test'); service.store.close(); service = new Service(db);
+    assert.equal(service.meta('test').config.input_mode, 'raw');
+    assert.equal(service.table({ table: 'adjust' }).total, 2200);
+    for (const mode of ['direct', 'cross', 'top']) {
+      const rows = service.list({ summary: 1, role: 'supply', mode, month: months[0], codes: [...selected], limit: 1000 }, 'test').rows;
+      assert.equal(rows.length, 100);
+      for (const row of rows) {
+        const net = engine.net(row.code, months[0]);
+        assert.equal(row.add, net.add); assert.equal(row.remove, net.remove); assert.equal(row.supply, net.supply);
+      }
+    }
+  } finally { service.store.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -99,6 +99,34 @@ function demo() {
     const g = c.slice(0, 2), sites = SITES[g], si = gIndex(c) % sites.length;
     t.mo.push({ mo_no: 'MO-' + c + '-' + months[k], code: c, qty: Math.round(q * .9), due_date: months[k] + '-25', sched_date: months[k] + '-24', status: '已排产', site_code: sites[si].code, site_name: sites[si].name });
   }
+
+  // 表2覆盖100个编码，按真实BOM最长路径层级均匀选取（不是按编码前缀）。
+  // 每个编码、每个月同时演示采购补充和独立使用剔除；不向表1重复加减。
+  s.config.input_mode = 'raw';
+  const graph = C.topology(t), layers = new Map(), forecasts = new Map();
+  for (const c of graph.order) {
+    const level = graph.level.get(c);
+    if (!layers.has(level)) layers.set(level, []);
+    layers.get(level).push(c);
+  }
+  for (const r of t.forecast) {
+    const key = JSON.stringify([r.code, r.month]);
+    forecasts.set(key, (forecasts.get(key) || 0) + r.qty);
+  }
+  const levels = [...layers.keys()].sort((a, b) => a - b), selected = [];
+  levels.forEach((level, i) => {
+    const candidates = layers.get(level).sort(), count = Math.floor(100 / levels.length) + Number(i < 100 % levels.length);
+    if (candidates.length < count) throw Error('示例BOM该层编码不足，无法均匀生成100个调整编码');
+    for (let j = 0; j < count; j++) selected.push(candidates[Math.floor(j * candidates.length / count)]);
+  });
+  selected.forEach((c, i) => months.forEach((month, k) => {
+    const forecast = forecasts.get(JSON.stringify([c, month]));
+    if (!(forecast > 0)) throw Error('示例调整编码缺少正数预测：' + c + '/' + month);
+    const add = Math.max(1, Math.round(forecast * (5 + (i + k) % 11) / 100));
+    const remove = Math.min(forecast, Math.max(1, Math.round(forecast * (3 + (i + k) % 6) / 100)));
+    t.adjust.push({ code: c, purchase_code: 'BUY-' + c, direction: '供应', month, qty: add });
+    t.adjust.push({ code: c, purchase_code: '', direction: '使用', month, qty: remove });
+  }));
   return s;
 }
 
