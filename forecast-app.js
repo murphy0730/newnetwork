@@ -180,7 +180,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     const cumulative = result.periodMode === 'cumulative', groups = result.periods;
     $('tbl-span').onchange = () => { state.tableSpan = Number($('tbl-span').value); state.offset = 0; render(); };
     $('tbl-period-mode').onchange = () => { state.tablePeriodMode = $('tbl-period-mode').value; state.offset = 0; render(); };
-    $('tbl-count').textContent = cumulative ? '累计匹配；库存只计起始月一次。KPI与风险筛选按起始月。' : '起始月同时展示含库存和不含库存缺口；后续月份均不计库存。KPI与风险筛选按起始月。';
+    $('tbl-count').textContent = cumulative ? `累计月份：${months.length}个月合并为1组供需合计，库存只计起始月一次。KPI与风险筛选按起始月。` : `单独月份：${months.length}个月分别展示${groups.length}组结果，不跨月累加；首月含库存和不含库存两版，后续均不计库存。KPI与风险筛选按起始月。`;
     const relationLabel = { direct: '父项编码', cross: '跨产业编码', top: '最顶层编码' }[result.trace.mode];
     const demandLabel = { direct: '上层总需求', cross: '跨产业总需求', top: '最顶层总需求' }[result.trace.mode];
     const siteCell = r => r.siteCount + '处 / ' + pct(r.maxShare);
