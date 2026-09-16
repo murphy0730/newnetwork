@@ -42,7 +42,17 @@
   }
   function showError(e) {
     notify(e.message, 'err');
-    if (e.details?.length || e.issues?.total) modal('数据校验未通过', '<p class="fc-muted">当前版本保持不变。修正问题后重新导入。</p>' + issueLinks(e.issues, e.jobId) + (e.issues?.total ? '<p class="fc-muted">下方仅预览前100项；下载文件包含全部问题。</p>' : '') + table(['文件 / 工作表', '行号', '字段', '原因'], (e.details || []).map(r => [esc([r.file, r.sheet].filter(Boolean).join(' / ')), esc(r.row || '—'), esc(r.field), esc(r.message)])), e.issues?.total ? [] : [{ label: '下载错误清单', run: () => downloadRows('导入错误', e.details || []) }]);
+    if (e.details?.length || e.issues?.total) {
+      const cols = ['文件 / 工作表', '行号', '字段', '原因'], toRow = r => [esc([r.file, r.sheet].filter(Boolean).join(' / ')), esc(r.row || '—'), esc(r.field), esc(r.message)];
+      // 按级别分组：阻断错误须修正；提示类（如制造部门为空、配比过小）只入清单并被预处理过滤，不阻断导入
+      const errs = (e.details || []).filter(r => (r.severity || 'error') === 'error'), warns = (e.details || []).filter(r => (r.severity || 'error') !== 'error');
+      const html = '<p class="fc-muted">当前版本保持不变。只有阻断错误导致失败；提示类问题仅记录清单并在预处理阶段过滤，不影响导入。</p>' + issueLinks(e.issues, e.jobId)
+        + (e.issues?.total ? '<p class="fc-muted">下方仅预览前100项；下载文件包含全部问题。</p>' : '')
+        + (errs.length ? '<h4 class="fc-section">阻断错误（须修正后重新操作）</h4>' + table(cols, errs.map(toRow)) : '')
+        + (warns.length ? '<h4 class="fc-section">提示与预处理过滤（不阻断）</h4>' + table(cols, warns.map(toRow)) : '')
+        + (!errs.length && !warns.length ? table(cols, []) : '');
+      modal('数据校验未通过', html, e.issues?.total ? [] : [{ label: '下载错误清单', run: () => downloadRows('导入错误', e.details || []) }]);
+    }
   }
   async function busy(message, fn) { if (activeJob) return notify('当前任务仍在处理，请稍候'); activeJob = true; notify(message); document.body.setAttribute('aria-busy', 'true'); try { await fn(); } catch (e) { showError(e); } finally { activeJob = false; document.body.removeAttribute('aria-busy'); } }
   function downloadRows(name, rows) { const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'data'); XLSX.writeFile(wb, name + '.xlsx'); }
