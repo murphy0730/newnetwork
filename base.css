@@ -218,6 +218,7 @@ table.data tbody tr:last-child td { border-bottom: none; }
   grid-template-columns: 228px minmax(0, 1fr) 348px;
   gap: 14px; height: calc(100vh - 116px); min-height: 560px;
   transition: grid-template-columns .28s var(--ease);
+  position: relative;
 }
 .ov > .card { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 /* 筛选面板折叠（默认收起） */
@@ -233,6 +234,9 @@ table.data tbody tr:last-child td { border-bottom: none; }
 .ov:not(.d-off) #btn-detail-close { display: inline-flex; }
 #btn-filters-close { display: none; }
 .ov:not(.f-off) #btn-filters-close { display: inline-flex; }
+/* 筛选面板折叠后的恢复入口：悬浮在面板原位置的左上角 */
+.ov-reopen { display: none; position: absolute; left: 0; top: 0; z-index: 6; }
+.ov.f-off .ov-reopen { display: inline-flex; }
 
 /* 筛选 */
 .f-group { margin-bottom: 13px; }
