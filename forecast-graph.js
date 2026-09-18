@@ -47,6 +47,8 @@
 
   const LEVEL_COLORS = ['#4A90E2', '#E8A33D', '#5BBF8A', '#7788a0'];
   const PALETTE = ['#67a7f5', '#55d4ba', '#edb464', '#b994f4', '#f39db7', '#8cbf73', '#e86a6a', '#4fc3f7', '#ffb74d', '#9575cd', '#5eead4', '#f4c463'];
+  // 亮色/暗色主题：画布文字与标签底色随 <html data-theme> 切换（图在主题切换时销毁重建）
+  const isLight = () => typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light';
 
   function levelColor(level) { return LEVEL_COLORS[Math.min(3, level || 0)]; }
   function hashColor(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return PALETTE[h % PALETTE.length]; }
@@ -123,11 +125,11 @@
           style: {
             size: d => d.style?.size || 24,
             fill: d => d.style?.fill || '#5597e7',
-            stroke: d => d.style?.stroke || '#0b1222',
+            stroke: d => d.style?.stroke || (isLight() ? '#ffffff' : '#0b1222'),
             lineWidth: d => d.style?.lineWidth || 2,
             opacity: 1,
             labelText: (d) => d.id,
-            labelFill: '#dae7f9',
+            labelFill: isLight() ? '#33415c' : '#dae7f9',
             labelFontSize: 11,
             labelPlacement: 'bottom',
             labelOffsetY: 4
@@ -140,7 +142,7 @@
         },
         edge: {
           type: 'line',
-          style: { stroke: d => d.style?.stroke || '#456489', lineWidth: d => d.style?.lineWidth || 1.5, endArrow: true, opacity: d => d.style?.opacity ?? 0.8, labelText: d => d.style?.labelText || '', labelFill: '#9db8dc', labelFontSize: 10, labelBackground: true, labelBackgroundFill: 'rgba(9,15,30,.85)', labelBackgroundRadius: 3, labelPadding: [1, 4, 1, 4] },
+          style: { stroke: d => d.style?.stroke || (isLight() ? '#8ba2c4' : '#456489'), lineWidth: d => d.style?.lineWidth || 1.5, endArrow: true, opacity: d => d.style?.opacity ?? 0.8, labelText: d => d.style?.labelText || '', labelFill: isLight() ? '#4c6076' : '#9db8dc', labelFontSize: 10, labelBackground: true, labelBackgroundFill: isLight() ? 'rgba(255,255,255,.92)' : 'rgba(9,15,30,.85)', labelBackgroundRadius: 3, labelPadding: [1, 4, 1, 4] },
           state: { active: { stroke: '#7db4ff', lineWidth: 2.5, opacity: 1 }, dim: { opacity: 0.05 } }
         },
         combo: {
@@ -271,7 +273,7 @@
         if (bottom < 0 || top > rect.height) continue;
         const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         text.setAttribute('x', 8); text.setAttribute('y', Math.max(15, top + 12));
-        text.setAttribute('fill', '#849bbd'); text.setAttribute('font-size', '10');
+        text.setAttribute('fill', isLight() ? '#5b6d8c' : '#849bbd'); text.setAttribute('font-size', '10');
         text.setAttribute('data-bom-level', band.level);
         text.textContent = 'BOM 第' + (band.level + 1) + '层 · ' + band.count;
         svg.appendChild(text);

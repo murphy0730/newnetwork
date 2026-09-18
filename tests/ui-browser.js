@@ -256,6 +256,15 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await wait(()=>js("!!document.querySelector('#build-jobs a[href*=issues]')"),'issue download after import');
   const report = await js("(async()=>{const link=document.querySelector('#build-jobs a[href*=issues]');const response=await fetch(link.href);return {status:response.status,text:await response.text()}})()");
   assert.equal(report.status,200); assert.ok(report.text.includes('原始行号')); checks.push('successful import exposes downloadable persistent issue CSV');
+  // 14. 亮暗主题切换：变量生效、localStorage 持久化、可切回
+  await click('#btn-theme');
+  await wait(() => js("document.documentElement.dataset.theme==='light'"), 'light theme');
+  assert.ok(await js("getComputedStyle(document.querySelector('.side')).backgroundImage.includes('rgb(255, 255, 255)')")); 
+  assert.ok(await js("localStorage.getItem('ct-theme')==='light'"));
+  const lightShot = await cdp('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, 'ui-light-theme.png'), Buffer.from(lightShot.data, 'base64'));
+  await click('#btn-theme');
+  await wait(() => js("document.documentElement.dataset.theme==='dark'"), 'dark theme');
+  checks.push('theme toggle switches light/dark, applies variables and persists');
   const shot = await cdp('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, 'ui-overview.png'), Buffer.from(shot.data, 'base64'));
   assert.deepEqual(errors, []); fs.writeFileSync(path.join(out, 'ui-browser.json'), JSON.stringify({ checks, errors }, null, 2)); console.log(JSON.stringify({ checks, errors }, null, 2));
 })().catch(e => { console.error(e); console.error(logs.slice(-3000)); process.exitCode = 1; }).finally(() => { ws?.close(); chrome?.kill(); app.kill(); });
