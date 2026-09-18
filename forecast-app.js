@@ -4,6 +4,8 @@
   const fmt = v => v == null || !Number.isFinite(v) ? '—' : v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }), pct = v => v == null ? '—' : fmt(v * 100) + '%';
   const codeLink = code => `<button class="fc-code" data-code="${esc(code)}">${esc(code)}</button>`;
   const gap = v => `<span class="fc-gap ${v > C.EPS ? 'positive' : v < -C.EPS ? 'negative' : ''}">${fmt(v)}</span>`;
+  // 供应汇总表按业务习惯展示结余：负数为缺口（红），正数为富余（绿）；内部 gap 仍为正数=缺口，状态/KPI口径不变
+  const bal = v => { const f = !v ? v : -v; return `<span class="fc-gap ${f < -C.EPS ? 'positive' : f > C.EPS ? 'negative' : ''}">${fmt(f)}</span>`; };
   const pill = (v, cls = '') => `<span class="fc-pill ${cls}">${esc(v)}</span>`;
   const opt = (value, label, selected) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(label)}</option>`;
   const select = (id, label, values, value) => `<label>${label}<select id="${id}">${values.map(([v, l]) => opt(v, l, value)).join('')}</select></label>`;
@@ -190,13 +192,13 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     const cumulative = result.periodMode === 'cumulative', groups = result.periods;
     $('tbl-span').onchange = () => { state.tableSpan = Number($('tbl-span').value); state.offset = 0; render(); };
     $('tbl-period-mode').onchange = () => { state.tablePeriodMode = $('tbl-period-mode').value; state.offset = 0; render(); };
-    $('tbl-count').textContent = cumulative ? `累计月份：${months.length}个月合并为1组供需合计，库存只计起始月一次。KPI与风险筛选按起始月。` : `单独月份：${months.length}个月分别展示${groups.length}组结果，不跨月累加；首月含库存和不含库存两版，后续均不计库存。KPI与风险筛选按起始月。`;
+    $('tbl-count').textContent = (cumulative ? `累计月份：${months.length}个月合并为1组供需合计，库存只计起始月一次。` : `单独月份：${months.length}个月分别展示${groups.length}组结果，不跨月累加；首月含库存和不含库存两版，后续均不计库存。`) + '结余为负即缺口，为正即富余。KPI与风险筛选按起始月。';
     const relationLabel = { direct: '父项编码', cross: '跨产业编码', top: '最顶层编码' }[result.trace.mode];
     const demandLabel = { direct: '上层总需求', cross: '跨产业总需求', top: '最顶层总需求' }[result.trace.mode];
     const siteCell = r => r.siteCount + '处 / ' + pct(r.maxShare);
     const riskCell = r => '<span class="wrap">' + (r.risks.map(x => pill(x, x.includes('不足') ? 'danger' : 'warn')).join('') || '—') + '</span>';
     const leadHeads = ['编码', '名称', '产业部门', '产品大类', relationLabel, '来源产业', '累计BOM用量'];
-    const numberHeads = g => ['表1预测', '供应添加', '使用剔除', '净供应', '来源折算需求', demandLabel, '预测缺口', ...(g.inventoryIncluded ? [cumulative ? '起始月库存' : '月初库存', '库存后缺口'] : []), '状态', '加工地', '风险标签', ...(cumulative ? ['首次累计缺口月'] : [])];
+    const numberHeads = g => ['表1预测', '供应添加', '使用剔除', '净供应', '来源折算需求', demandLabel, '供需结余', ...(g.inventoryIncluded ? [cumulative ? '起始月库存' : '月初库存', '库存后结余'] : []), '状态', '加工地', '风险标签', ...(cumulative ? ['首次累计缺口月'] : [])];
     const head = '<thead><tr>' + leadHeads.map(h => '<th rowspan="2">' + h + '</th>').join('') + groups.map(g => '<th colspan="' + numberHeads(g).length + '" data-period-start="' + esc(g.start) + '" data-period-end="' + esc(g.end) + '">' + esc(g.label) + '</th>').join('') + '</tr><tr>' + groups.map(g => numberHeads(g).map(h => '<th>' + h + '</th>').join('')).join('') + '</tr></thead>';
     const body = result.rows.map(r => {
       const targets = r.targets?.length ? r.targets : [null], n = targets.length;
@@ -206,7 +208,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
         '<td>' + (target ? codeLink(target.code) : '—') + '</td><td>' + esc(target?.make_dept || '—') + '</td><td>' + fmt(target?.coeff) + '</td>' +
         r.periods.map((x, mi) => {
           const [status, cls] = rowStatus(x), contribution = cumulative ? target?.demand : target?.monthly[mi]?.demand;
-          return [x.raw, x.add, x.remove, x.supply].map(v => shared(fmt(v), i)).join('') + '<td>' + fmt(contribution) + '</td>' + shared(fmt(x.demand), i) + shared(gap(x.gap), i) + (x.inventoryIncluded ? shared(fmt(x.inventory), i) + shared(gap(x.coverageGap), i) : '') + shared('<span class="ins-status ' + cls + '">' + status + '</span>', i) + shared(siteCell(x), i) + shared(riskCell(x), i) + (cumulative ? shared(esc(x.firstShortage || '—'), i) : '');
+          return [x.raw, x.add, x.remove, x.supply].map(v => shared(fmt(v), i)).join('') + '<td>' + fmt(contribution) + '</td>' + shared(fmt(x.demand), i) + shared(bal(x.gap), i) + (x.inventoryIncluded ? shared(fmt(x.inventory), i) + shared(bal(x.coverageGap), i) : '') + shared('<span class="ins-status ' + cls + '">' + status + '</span>', i) + shared(siteCell(x), i) + shared(riskCell(x), i) + (cumulative ? shared(esc(x.firstShortage || '—'), i) : '');
         }).join('') + '</tr>').join('');
     }).join('');
     $('tbl-body').innerHTML = '<div class="fc-tablewrap tbl-fill"><table class="fc-table">' + head + '<tbody>' + (body || '<tr><td colspan="' + (7 + groups.reduce((n, g) => n + numberHeads(g).length, 0)) + '" class="fc-muted">暂无符合筛选条件的编码</td></tr>') + '</tbody></table></div>';
@@ -228,7 +230,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
         const out = { 编码: r.code, 名称: r.name, 产业部门: r.make_dept, 产品大类: r.category, [relationLabel]: target?.code || '—', 来源产业: target?.make_dept || '—', 累计BOM用量: target?.coeff ?? '', 汇总值说明: i === 0 ? '本编码合计（仅首行记载）' : '来源明细（合计见本编码首行）' };
         for (const [mi, x] of r.periods.entries()) {
           const label = x.label; out['来源折算需求 ' + label] = (cumulative ? target?.demand : target?.monthly[mi]?.demand) ?? '';
-          for (const [name, key] of [['表1预测', 'raw'], ['供应添加', 'add'], ['使用剔除', 'remove'], ['净供应', 'supply'], [demandLabel, 'demand'], ['预测缺口', 'gap'], ...(x.inventoryIncluded ? [[cumulative ? '起始月库存' : '月初库存', 'inventory'], ['库存后缺口', 'coverageGap']] : [])]) out[name + ' ' + label] = i === 0 ? x[key] ?? '' : '';
+          for (const [name, key, sign] of [['表1预测', 'raw'], ['供应添加', 'add'], ['使用剔除', 'remove'], ['净供应', 'supply'], [demandLabel, 'demand'], ['供需结余', 'gap', -1], ...(x.inventoryIncluded ? [[cumulative ? '起始月库存' : '月初库存', 'inventory'], ['库存后结余', 'coverageGap', -1]] : [])]) out[name + ' ' + label] = i === 0 ? (x[key] == null ? '' : sign ? -x[key] || 0 : x[key]) : '';
           out['状态 ' + label] = i === 0 ? rowStatus(x)[0] : '';
           out['加工地数 ' + label] = i === 0 ? x.siteCount : '';
           out['风险 ' + label] = i === 0 ? x.risks.join('；') : '';

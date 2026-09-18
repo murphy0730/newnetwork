@@ -62,16 +62,16 @@ async function exported() {
     const individual = await choose('单独月份');
     assert.ok(await js("document.querySelector('#tbl-count').textContent.includes('3个月分别展示3组结果，不跨月累加')"));
     assert.equal(individual.value, 'individual'); assert.deepEqual(individual.headings, ['2026年9月', '2026年10月', '2026年11月']);
-    for (const [field, expected] of [['表1预测', ['100', '200', '300']], ['供应添加', ['10', '20', '30']], ['使用剔除', ['5', '10', '15']], ['净供应', ['110', '220', '330']], ['来源折算需求', ['400', '600', '800']], ['预测缺口', ['295', '390', '485']]]) assert.deepEqual(individual.groups.map(g => g[field]), expected, mode + '/' + field);
-    assert.deepEqual(individual.groups.map(g => g['库存后缺口']), ['245', undefined, undefined]);
+    for (const [field, expected] of [['表1预测', ['100', '200', '300']], ['供应添加', ['10', '20', '30']], ['使用剔除', ['5', '10', '15']], ['净供应', ['110', '220', '330']], ['来源折算需求', ['400', '600', '800']], ['供需结余', ['-295', '-390', '-485']]]) assert.deepEqual(individual.groups.map(g => g[field]), expected, mode + '/' + field);
+    assert.deepEqual(individual.groups.map(g => g['库存后结余']), ['-245', undefined, undefined]);
     const separateExport = await exported();
     assert.equal(separateExport[0]['计算方式'], '单独月份'); assert.equal(separateExport[0]['净供应 2026年10月'], 220);
     const cumulative = await choose('累计月份'); assert.equal(cumulative.value, 'cumulative'); assert.deepEqual(cumulative.headings, ['2026年9-11月']);
     assert.ok(await js("document.querySelector('#tbl-count').textContent.includes('3个月合并为1组供需合计')"));
     const total = cumulative.groups[0];
-    for (const [field, expected] of Object.entries({ '表1预测': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '预测缺口': '1,170', '起始月库存': '50', '库存后缺口': '1,120' })) assert.equal(total[field], expected, mode + '/' + field);
+    for (const [field, expected] of Object.entries({ '表1预测': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '供需结余': '-1,170', '起始月库存': '50', '库存后结余': '-1,120' })) assert.equal(total[field], expected, mode + '/' + field);
     const cumulativeExport = await exported(); assert.equal(cumulativeExport[0]['计算方式'], '累计月份'); assert.equal(cumulativeExport[0]['净供应 2026年9-11月'], 660);
-    assert.equal(cumulativeExport[0]['库存后缺口 2026年9-11月'], 1120);
+    assert.equal(cumulativeExport[0]['库存后结余 2026年9-11月'], -1120);
     evidence.push({ mode, individual, cumulative }); checks.push(mode + ': label selection, per-month values, cumulative sums and Excel agree');
     assert.deepEqual(await choose('单独月份'), individual); checks.push(mode + ': switching back restores individual values');
   }
