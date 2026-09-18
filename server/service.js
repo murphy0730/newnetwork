@@ -7,6 +7,18 @@ const Engine = require('./engine');
 const Query = require('./query-index');
 const error = (message, status = 400, details) => Object.assign(Error(message), { status, details });
 const int = (x, fallback, min, max) => { if (x == null || x === '') return fallback; const n = Number(x); if (!Number.isInteger(n) || n < min || n > max) throw error(`整数参数超出范围${min}~${max}`); return n; };
+// 节点类型取表3 BOM的父项/子项模板：父项模板优先，其次子项模板；未维护则前端按层级兜底着色
+const templateCache = new WeakMap();
+function templatesOf(e) {
+  let m = templateCache.get(e);
+  if (!m) {
+    m = new Map();
+    for (const r of e.t.bom) if (r.child_template && !m.has(r.child)) m.set(r.child, r.child_template);
+    for (const r of e.t.bom) if (r.parent_template) m.set(r.parent, r.parent_template);
+    templateCache.set(e, m);
+  }
+  return m;
+}
 function checkConfig(cfg) {
   if (!['net', 'raw'].includes(cfg.input_mode)) throw error('预测输入口径无效');
   if (!(Number.isFinite(cfg.cv_threshold) && cfg.cv_threshold >= 0 && cfg.cv_threshold <= 10)) throw error('CV阈值应为0~10');
@@ -232,12 +244,12 @@ class Service {
     const paths = q.code ? e.paths(q.code, month, mode, source) : null, criticalEdges = new Set(), riskEdges = new Set();
     if (paths?.critical?.complete) for (let i = 1; i < paths.critical.path.length; i++) criticalEdges.add(JSON.stringify([paths.critical.path[i - 1], paths.critical.path[i]]));
     if (paths) for (const r of paths.edges) riskEdges.add(JSON.stringify([r.parent, r.child]));
-    const raw = q.graphRelations === 'bom', links = [];
+    const raw = q.graphRelations === 'bom', links = [], tm = templatesOf(e);
     for (const code of visible) {
       const rs = raw ? e.graph.parents.get(code).map(r => ({ code: r.parent, coeff: r.qty, kind: 'BOM' })) : e.relations(code, mode);
       for (const r of rs) if (visible.has(r.code)) links.push({ source: r.code, target: code, qty: r.coeff, kind: r.kind, critical: criticalEdges.has(JSON.stringify([r.code, code])), risk: riskEdges.has(JSON.stringify([r.code, code])) });
     }
-    return { trace, nodes: [...visible].map(code => { const lv = e.graph.level.get(code), minLv = e.graph.minLevel?.get(code); return { ...this.compact(e.row(code, month, mode, source)), level: lv, minLevel: minLv ?? lv, parentCount: e.graph.parents.get(code).length, multiLevel: minLv != null && minLv < lv, matched: matches.has(code) }; }), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
+    return { trace, nodes: [...visible].map(code => { const lv = e.graph.level.get(code), minLv = e.graph.minLevel?.get(code); return { ...this.compact(e.row(code, month, mode, source)), level: lv, minLevel: minLv ?? lv, template: tm.get(code) || '', parentCount: e.graph.parents.get(code).length, multiLevel: minLv != null && minLv < lv, matched: matches.has(code) }; }), edges: links, truncated: false, matchedNodes: matches.size, totalNodes: e.graph.codes.length, critical: paths?.critical, relationNote: raw ? '真实BOM链路，用于完整周期与风险路径' : '按分析口径折叠关系；查看路径时自动切换真实BOM' };
   }
   report(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), indexed = Query.view(e, month, mode, source), rows = indexed.rows, sites = new Map();

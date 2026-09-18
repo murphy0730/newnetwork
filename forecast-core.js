@@ -363,7 +363,7 @@
   function sample() {
     const s = empty(), m = today().slice(0, 7), t = s.tables; s.kind = 'sample'; s.updated_at = new Date().toISOString();
     t.attributes = [ ['A', '共用模块', '基础制造部', 10, .4], ['B', '整机B', '整机事业部', 8, .12], ['C', '整机C', '整机事业部', 6, .15], ['D', '模块原料', '基础制造部', 15, .08] ].map(([code, name, make_dept, lead_mean, lead_cv]) => ({ code, name, make_dept, lead_mean, lead_cv, sample_count: 30, source: '示例维护' }));
-    t.bom = [{ id: '1', parent: 'B', child: 'A', qty: 2 }, { id: '2', parent: 'C', child: 'A', qty: 1 }, { id: '3', parent: 'A', child: 'D', qty: .5 }];
+    t.bom = [{ id: '1', parent: 'B', child: 'A', qty: 2, parent_template: '成品模板', child_template: '半成品模板' }, { id: '2', parent: 'C', child: 'A', qty: 1, parent_template: '成品模板', child_template: '半成品模板' }, { id: '3', parent: 'A', child: 'D', qty: .5, parent_template: '半成品模板', child_template: '原材料模板' }];
     for (let i = 0; i < 11; i++) {
       const month = addMonth(m, i);
       for (const [code, qty, site_code, site_name] of [['A', 1000, i % 2 ? 'S2' : 'S1', i % 2 ? '乙加工地' : '甲加工地'], ['B', 400, 'S3', '整机加工地'], ['C', 300, 'S3', '整机加工地'], ['D', 520, 'S4', '原料加工地甲'], ['D', 30, 'S5', '原料加工地乙']]) t.forecast.push({ plan_date: today(), code, month, origin_month: m, qty, site_code, site_name, supplier_code: 'V-' + site_code, supplier_name: '供应商-' + site_code, type: code === 'B' || code === 'C' ? '成品' : '半成品' });

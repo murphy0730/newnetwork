@@ -217,7 +217,7 @@
       if (this.colorBy === 'risk') fill = this._riskColor(n);
       else if (this.colorBy === 'site') fill = this._siteColor(n);
       else if (this.colorBy === 'none') fill = '#7788a0';
-      else fill = levelColor(n.level);
+      else fill = n.template ? hashColor(String(n.template)) : levelColor(n.level); // 类型优先取表3父项/子项模板，未维护按层级兜底
       let stroke = '#0b1222', lineWidth = 2;
       if ((n.gap || 0) > 1e-8) { stroke = '#ff7899'; lineWidth = 3; }
       else if (n.single) { stroke = '#f4c463'; lineWidth = 3; }
@@ -483,5 +483,6 @@
     destroy() { clearTimeout(this._resizeTimer); this._renderRevision++; this._dragging = false; if (this._resizeObserver) { this._resizeObserver.disconnect(); this._resizeObserver = null; } if (this._hullRaf) { cancelAnimationFrame(this._hullRaf); this._hullRaf = 0; } if (this.hullLayer) { this.hullLayer.remove(); this.hullLayer = null; } if (this.graph) { this.graph.destroy(); this.graph = null; } }
   }
 
+  ForecastGraph.hashColor = hashColor; // 暴露给图例：模板类型与节点颜色保持一致
   root.ForecastGraph = ForecastGraph;
 })(typeof window !== 'undefined' ? window : this);

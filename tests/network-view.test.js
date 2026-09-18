@@ -51,3 +51,14 @@ test('BOM bands keep all ten levels and parent-before-child order with clusterin
   assert.equal(plan.positions.size, 100000); assert.equal(plan.regions.length, 10);
   assert.ok([...plan.positions.values()].every(p => p.every(Number.isFinite)));
 });
+
+test('graph nodes carry the 表3 parent/child template for type coloring', () => {
+  const data = C.sample(), s = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-template-')), 'test.sqlite'));
+  try {
+    s.publish(data, 0, 'test', 'test');
+    const g = s.graph({ month: data.tables.forecast[0].month, mode: 'direct', limit: 1 }, 'test');
+    const type = Object.fromEntries(g.nodes.map(n => [n.code, n.template]));
+    assert.equal(type.B, '成品模板'); assert.equal(type.C, '成品模板');
+    assert.equal(type.A, '半成品模板'); assert.equal(type.D, '原材料模板');
+  } finally { s.store.close(); }
+});
