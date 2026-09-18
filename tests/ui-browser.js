@@ -117,6 +117,10 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.equal(await js("document.querySelector('#tbl-period-mode').value"), 'individual');
   assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['310', '340', '310', '310', '310', '310', '310']);
   assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body th[data-period-start]')].map(x=>x.colSpan)"), [12, 10, 10, 10, 10, 10]);
+  // 滚动到底部时：双表头保持吸附在表体顶部，底部分页栏保持在视口内可点击
+  // 滚动到底部时：双表头保持吸附在表体顶部，底部分页栏保持在视口内可点击（内容不足一屏时只校验分页栏可见）
+  const pin = await js("(()=>{const w=document.querySelector('#tbl-body .fc-tablewrap'),box=document.getElementById('table-box'),f=[...box.children].at(-1),scrollable=w.scrollHeight>w.clientHeight+1;if(scrollable)w.scrollTop=w.scrollHeight;const wr=w.getBoundingClientRect(),th0=w.querySelector('thead tr th').getBoundingClientRect(),th1=w.querySelectorAll('thead tr')[1].cells[0].getBoundingClientRect(),fr=f.getBoundingClientRect();return {scrollable,st:w.scrollTop,d0:th0.top-wr.top,d1:th1.top-(wr.top+th0.height/2),fb:fr.bottom,ft:fr.top,vh:window.innerHeight}})()");
+  assert.ok(pin.fb <= pin.vh && pin.ft >= 0 && (!pin.scrollable || (pin.st > 0 && Math.abs(pin.d0) < 2 && Math.abs(pin.d1) < 2)), JSON.stringify(pin)); checks.push('summary header and pagination stay pinned while scrolling');
   // Intercept only the final workbook download to inspect exactly what the user exports.
   await js("window.__writeFile=XLSX.writeFile;XLSX.writeFile=wb=>window.__summaryExport=XLSX.utils.sheet_to_json(wb.Sheets.data)");
   await click('#export-table');
