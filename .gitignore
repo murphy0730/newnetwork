@@ -16,7 +16,12 @@ tests/*
 !tests/adjust-import-browser.js
 !tests/summary-period-browser.js
 !tests/ui-browser.js
+!tests/cluster-browser.js
 !tests/response-benchmark.js
+!tests/shot-hull.js
+!tests/shot-live.js
+!tests/shot-spacing.js
+!tests/shot-table.js
 *.log
 
 # 离线构建输入与运行产物
