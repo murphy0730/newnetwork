@@ -122,11 +122,10 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     else if (state.colorBy === 'site') base = `<span class="lg"><span class="sw" style="background:#67a7f5"></span>按加工地染色</span>`;
     else if (state.colorBy === 'none') base = `<span class="lg"><span class="sw" style="background:#7788a0"></span>统一色</span>`;
     else {
-      // 类型染色：表3父项/子项模板有维护时按模板着色并列出模板图例；未维护的节点按层级兜底
+      // 类型染色：表3父项/子项模板有维护时，图例只列模板类型（未维护模板的节点统一灰色）；完全无模板时按层级兜底
       const templates = [...new Set((lastGraph?.nodes || []).map(n => n.template).filter(Boolean))].sort();
-      const typeLg = templates.map(t => `<span class="lg"><span class="sw" style="background:${window.ForecastGraph.hashColor(t)}"></span>${esc(t)}</span>`).join('');
-      const levelLg = `<span class="lg"><span class="sw" style="background:#4A90E2"></span>成品</span><span class="lg"><span class="sw" style="background:#E8A33D"></span>半成品</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>原材料</span><span class="lg"><span class="sw" style="background:#7788a0"></span>更深层</span>`;
-      base = typeLg + (templates.length ? `<span class="lg" style="color:var(--ink-4)">未维护模板按层级：</span>` : '') + levelLg + `<span class="lg"><span class="sw dash"></span>跨产业边界</span>`;
+      if (templates.length) base = templates.map(t => `<span class="lg"><span class="sw" style="background:${window.ForecastGraph.hashColor(t)}"></span>${esc(t)}</span>`).join('') + `<span class="lg"><span class="sw" style="background:#7788a0"></span>未维护模板</span><span class="lg"><span class="sw dash"></span>跨产业边界</span>`;
+      else base = `<span class="lg"><span class="sw" style="background:#4A90E2"></span>成品</span><span class="lg"><span class="sw" style="background:#E8A33D"></span>半成品</span><span class="lg"><span class="sw" style="background:#5BBF8A"></span>原材料</span><span class="lg"><span class="sw" style="background:#7788a0"></span>更深层</span><span class="lg"><span class="sw dash"></span>跨产业边界</span>`;
     }
     if (state.highlight === 'critical') base += `<span class="lg"><span class="sw" style="background:#5eead4"></span>关键路径：按加工周期均值累计的最长链路</span>`;
     if (state.highlight === 'risk') base += `<span class="lg"><span class="sw" style="background:#fbbf24"></span>风险路径：存在数量、加工地或周期风险的链路</span>`;

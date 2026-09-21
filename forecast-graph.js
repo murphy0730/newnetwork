@@ -217,7 +217,8 @@
       if (this.colorBy === 'risk') fill = this._riskColor(n);
       else if (this.colorBy === 'site') fill = this._siteColor(n);
       else if (this.colorBy === 'none') fill = '#7788a0';
-      else fill = n.template ? hashColor(String(n.template)) : levelColor(n.level); // 类型优先取表3父项/子项模板，未维护按层级兜底
+      // 类型染色：表3父项/子项模板优先；数据内有模板时未维护节点统一灰色，完全无模板时按层级兜底
+      else fill = n.template ? hashColor(String(n.template)) : this._hasTemplates ? '#7788a0' : levelColor(n.level);
       let stroke = '#0b1222', lineWidth = 2;
       if ((n.gap || 0) > 1e-8) { stroke = '#ff7899'; lineWidth = 3; }
       else if (n.single) { stroke = '#f4c463'; lineWidth = 3; }
@@ -426,6 +427,7 @@
       if (opts.selected !== undefined) this.selected = opts.selected;
       if (opts.criticalPath !== undefined) this.criticalPath = opts.criticalPath;
       this.nodes = nodes || [];
+      this._hasTemplates = this.nodes.some(n => n.template);
       this.edges = edges || [];
       this._nodeMap = new Map(this.nodes.map(n => [n.code, n]));
       this._outEdges = new Map(); this._inEdges = new Map();

@@ -46,7 +46,9 @@ function demo() {
   // 3) 每层前 20% 编码为"共用料池"，承接约 60% 的引用（真实共用与汇聚）
   // 结果是大量编码 minLevel ≠ maxLevel，真实体现"同一编码跨多层归属"
   let bid = 0;
-  const bom = (parent, child, qty) => { bid++; t.bom.push({ id: 'BOM-' + String(bid).padStart(4, '0'), parent, child, qty }); };
+  // 表3父项/子项模板：按编码所属层给出类型（整机/模组/部件/结构件/基础料/深基础料/原料模板），网络图类型染色以此为据
+  const tpl = c => NM[c.split('-')[0]] + '模板';
+  const bom = (parent, child, qty) => { bid++; t.bom.push({ id: 'BOM-' + String(bid).padStart(4, '0'), parent, child, qty, parent_template: tpl(parent), child_template: tpl(child) }); };
   const hotPool = P => P.slice(0, Math.max(2, Math.floor(P.length * 0.2)));
   const parentsOf = {};
   for (let li = 1; li < LEVEL.length; li++) {
