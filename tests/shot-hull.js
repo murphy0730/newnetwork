@@ -22,6 +22,8 @@ async function js(expression) { const r = await cdp('Runtime.evaluate', { expres
   ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id) { const p = pending.get(m.id); if (p) { pending.delete(m.id); m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result); } } };
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false });
   await cdp('Page.navigate', { url: 'http://127.0.0.1:' + appPort + '/' });
+  await wait(() => js("!!document.querySelector('[data-layout=\"layered\"]')"), 'layout seg');   // 固定经典渲染器：千级编码示例会触发大数据自动进地图模式
+  await js("document.querySelector('[data-layout=\"layered\"]').click()");
   await wait(() => js("!!document.querySelector('#graph-container canvas')"), 'overview');
   await js("document.querySelector('[data-cluster=\"site\"]').click()"); await sleep(1200);
   await wait(() => js("document.querySelectorAll('#graph-container .cluster-hull-layer path[data-cluster]').length>1"), 'hulls');

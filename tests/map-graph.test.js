@@ -2,7 +2,7 @@
 // 地图版渲染器的纯函数回归：块聚合 / 尺寸 / 排布 / 流 Top-N 裁剪。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { aggregateBlocks, blockSizes, placeBlocks, placeColumns, aggregateFlows, flowWidth, layered } = require('../forecast-graph.map.js');
+const { aggregateBlocks, blockSizes, placeBlocks, placeSubColumn, placeCodeRows, fitLabel, pickFocusBlock, aggregateFlows, flowWidth, layered, pickInitialLevel, LOD_SMALL_MAX, LOD_MEDIUM_MAX } = require('../forecast-graph.map.js');
 
 const N = (code, level, extra) => Object.assign({ code, level }, extra || {});
 
@@ -89,22 +89,60 @@ test('flowWidth 单调、有上界', () => {
   assert.equal(flowWidth(10000), 4.6);
 });
 
-test('placeColumns 每块一列、列内按层自顶向下、列间不重叠、居中于原点', () => {
-  const U = (bk, lv, count) => ({ key: bk + '\u0000' + lv, count, meanLevel: lv, riskCount: 0 });
-  const units = [U('甲', 0, 5), U('甲', 1, 40), U('乙', 0, 9), U('乙', 1, 3), U('丙', 1, 20)];
-  const plan = placeColumns(units);
-  assert.equal(plan.columns.length, 3);
-  // 列按总规模降序：甲(45) 乙(12) 丙(20) → 甲, 丙, 乙
-  assert.deepEqual(plan.columns.map(c => c.key), ['甲', '丙', '乙']);
-  // 同列内层 0 在层 1 之上
-  const a0 = plan.pos.get('甲\u00000'), a1 = plan.pos.get('甲\u00001');
+test('placeSubColumn：子块列锚定焦点块中心、按层自顶向下、确定性', () => {
+  const anchor = { x: 100, y: 50, w: 200, h: 120, cx: 200, cy: 110 };
+  const units = [{ key: 'A0', count: 12 }, { key: 'A1', count: 30 }, { key: 'A2', count: 5 }];
+  const col = placeSubColumn(anchor, units);
+  assert.equal(col.pos.size, 3);
+  const a0 = col.pos.get('A0'), a1 = col.pos.get('A1');
+  assert.equal(a0.cx, anchor.cx); assert.equal(a1.cx, anchor.cx);
   assert.ok(a0.cy < a1.cy, '同列低层应在上方');
-  assert.equal(a0.cx, a1.cx, '同列应共享 cx');
-  // 居中：整体 bbox 中心接近原点
-  const xs = [...plan.pos.values()]; const cxAvg = (Math.min(...xs.map(p => p.x)) + Math.max(...xs.map(p => p.x + p.w))) / 2;
-  assert.ok(Math.abs(cxAvg) < 1e-6, '应水平居中于原点');
-  const cyAvg = (Math.min(...xs.map(p => p.y)) + Math.max(...xs.map(p => p.y + p.h))) / 2;
-  assert.ok(Math.abs(cyAvg) < 1e-6, '应垂直居中于原点');
+  assert.ok(col.width >= anchor.w, '列宽不小于锚点宽度');
+  assert.ok(col.title.cy < a0.cy && col.title.cx === anchor.cx, '标题在列顶且居中');
+  const again = placeSubColumn(anchor, units);
+  for (const k of col.pos.keys()) assert.deepEqual(col.pos.get(k), again.pos.get(k));
+});
+
+test('placeCodeRows：行以锚点为中心、编码等距、行标签在最左列之外', () => {
+  const anchor = { cx: 500, cy: 300 };
+  const rows = [{ level: 0, codes: ['a', 'b', 'c'] }, { level: 1, codes: ['d', 'e'] }];
+  const plan = placeCodeRows(anchor, rows);
+  const y0 = plan.pos.get('a').y, y1 = plan.pos.get('d').y;
+  assert.ok(y0 < y1, '低层在上');
+  assert.equal(plan.pos.get('b').x - plan.pos.get('a').x, 60);
+  assert.equal((plan.pos.get('a').x + plan.pos.get('c').x) / 2, anchor.cx, '行中心对齐锚点');
+  assert.ok(plan.rowRects.get(0).cx < plan.pos.get('d').x, '行标签在行块左侧');
+  assert.equal((y0 + y1) / 2, anchor.cy, '整体垂直居中于锚点');
+});
+
+test('fitLabel：屏幕宽度不足时省略，足够时原样', () => {
+  assert.equal(fitLabel('电机产业 · 85', 500, 12), '电机产业 · 85');
+  const t = fitLabel('电机产业 · 85', 60, 12);
+  assert.ok(t.endsWith('…') && t.length < 8);
+  assert.equal(fitLabel('', 0, 12), '');
+  assert.equal(fitLabel('AB', 0, 12), 'A…');
+});
+
+test('pickFocusBlock：风险数优先，平手取编码数，空输入安全', () => {
+  const blocks = [
+    { key: '甲', count: 100, riskCount: 3 },
+    { key: '乙', count: 40, riskCount: 9 },
+    { key: '丙', count: 90, riskCount: 9 }
+  ];
+  assert.equal(pickFocusBlock(blocks), '丙');   // 风险并列 → 编码数多者
+  assert.equal(pickFocusBlock([{ key: 'x', count: 1, riskCount: 0 }]), 'x');
+  assert.equal(pickFocusBlock([]), null);
+});
+
+test('aggregateFlows 风险加权：风险边多的流排前', () => {
+  const BLK = { x1: 'X', x2: 'X', y1: 'Y', z1: 'Z' };
+  const edges = [
+    { source: 'x1', target: 'y1' }, { source: 'x1', target: 'y1' }, { source: 'x1', target: 'y1' },   // X->Y 3 条无风险
+    { source: 'x2', target: 'z1', risk: true }, { source: 'x2', target: 'z1', risk: true }            // X->Z 2 条全风险 → 权重 4
+  ];
+  const flows = aggregateFlows(edges, c => BLK[c], { perSource: 5, max: 10 });
+  assert.equal(flows[0].t, 'Z');            // 2 条风险边（权重4）压过 3 条普通边
+  assert.equal(flows[0].riskCount, 2);
 });
 
 test('placeBlocks 以原点为中心（换档可 zoomTo(z,[0,0]) 居中）', () => {
@@ -114,6 +152,15 @@ test('placeBlocks 以原点为中心（换档可 zoomTo(z,[0,0]) 居中）', () 
   const cx = (Math.min(...v.map(p => p.x)) + Math.max(...v.map(p => p.x + p.w))) / 2;
   const cy = (Math.min(...v.map(p => p.y)) + Math.max(...v.map(p => p.y + p.h))) / 2;
   assert.ok(Math.abs(cx) < 1e-6 && Math.abs(cy) < 1e-6, '应以原点为中心');
+});
+
+test('pickInitialLevel：聚焦直达 C，小数据集全量 C，中等 B，大规模 A', () => {
+  assert.equal(pickInitialLevel(5000, true), 'C');                    // 有聚焦（选中编码）直达明细
+  assert.equal(pickInitialLevel(1, false), 'C');
+  assert.equal(pickInitialLevel(LOD_SMALL_MAX, false), 'C');          // 小数据集边界：直接全量
+  assert.equal(pickInitialLevel(LOD_SMALL_MAX + 1, false), 'B');
+  assert.equal(pickInitialLevel(LOD_MEDIUM_MAX, false), 'B');         // 中等数据集边界：层内结构
+  assert.equal(pickInitialLevel(LOD_MEDIUM_MAX + 1, false), 'A');     // 大规模从聚类总览开始
 });
 
 test('保留的旧 layered() 仍可用（向后兼容）', () => {

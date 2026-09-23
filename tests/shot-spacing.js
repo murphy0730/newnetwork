@@ -22,6 +22,8 @@ async function js(expression) { const r = await cdp('Runtime.evaluate', { expres
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false });
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "let G; Object.defineProperty(window,'ForecastGraph',{configurable:true,get:()=>G,set:C=>{G=class extends C{constructor(...a){super(...a);window.__testGraph=this;}};}});" });
   await cdp('Page.navigate', { url: 'http://127.0.0.1:' + appPort + '/' });
+  await wait(() => js("!!document.querySelector('[data-layout=\"layered\"]')"), 'layout seg');   // 固定经典渲染器：千级编码示例会触发大数据自动进地图模式
+  await js("document.querySelector('[data-layout=\"layered\"]').click()");
   await wait(() => js("!!window.__testGraph?.nodes.length && !!document.querySelector('#graph-container canvas')"), 'overview');
   await js('window.__testGraph._renderQueue');
   await js("document.querySelector('[data-layout=\"layered\"]').click()"); await js('window.__testGraph._renderQueue'); await sleep(800);

@@ -46,6 +46,7 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false });
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "let GraphClass; Object.defineProperty(window,'ForecastGraph',{configurable:true,get:()=>GraphClass,set:C=>{GraphClass=class extends C {constructor(...args){super(...args);window.__testGraph=this;} setData(...a){window.__graphRev=(window.__graphRev||0)+1;return super.setData(...a);}};}});" });
   await cdp('Page.navigate', { url: 'http://127.0.0.1:' + appPort + '/' });
+  await click('[data-layout="layered"]');   // 固定经典渲染器：千级编码示例会触发大数据自动进地图模式
   await wait(() => js("!!window.__testGraph?.nodes.length && !!document.querySelector('#graph-container canvas')"), 'overview');
   await js('window.__testGraph._renderQueue');
   assert.ok(await js("document.getElementById('gs-hide-isolated').checked"));
@@ -129,7 +130,7 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.equal(exported.length, 2); assert.deepEqual(exported.map(r => r['跨产业编码']).sort(), ['SUM-B1', 'SUM-B2']);
   const monthlyGaps = Object.keys(exported[0]).filter(k => k.startsWith('库存后结余 '));
   assert.equal(monthlyGaps.length, 1);
-  assert.equal(Object.keys(exported[0]).filter(k => k.startsWith('月初库存 ')).length, 1);
+  assert.equal(Object.keys(exported[0]).filter(k => k.startsWith('最新库存 ')).length, 1);
   assert.equal(Object.keys(exported[0]).filter(k => k.startsWith('供需结余 ')).length, 6);
   for (const key of monthlyGaps) { assert.equal(exported[0][key], 340); assert.equal(exported[1][key], ''); }
   await js("{ const mode=document.querySelector('#tbl-period-mode');mode.value='cumulative';mode.dispatchEvent(new Event('change')); }");

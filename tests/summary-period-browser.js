@@ -26,7 +26,7 @@ function seedFixture(db) {
     const month = C.addMonth('2026-09', i);
     for (const [code, qty] of [['P', 200 + i * 100], ['C', 100 + i * 100]]) data.tables.forecast.push({ code, month, plan_date: '2026-09-01', qty, site_code: 'S' });
     data.tables.adjust.push({ code: 'C', purchase_code: 'BUY-C', direction: '供应', month, qty: 10 * (i + 1) }, { code: 'C', purchase_code: '', direction: '使用', month, qty: 5 * (i + 1) });
-    data.tables.inventory.push({ code: 'C', date: month + '-01', qty: [50, 700, 900][i] });
+    if (i === 0) data.tables.inventory.push({ code: 'C', date: month + '-01', qty: 50 });   // 表4新规则：取不晚于今天的最新快照（与分析月无关），单条固定历史日期即可
   }
   const s = new Service(db); try { s.publish(data, 0, 'local', 'test'); } finally { s.store.close(); }
 }
@@ -69,7 +69,7 @@ async function exported() {
     const cumulative = await choose('累计月份'); assert.equal(cumulative.value, 'cumulative'); assert.deepEqual(cumulative.headings, ['2026年9-11月']);
     assert.ok(await js("document.querySelector('#tbl-count').textContent.includes('3个月合并为1组供需合计')"));
     const total = cumulative.groups[0];
-    for (const [field, expected] of Object.entries({ '表1预测': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '供需结余': '-1,170', '起始月库存': '50', '库存后结余': '-1,120' })) assert.equal(total[field], expected, mode + '/' + field);
+    for (const [field, expected] of Object.entries({ '表1预测': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '供需结余': '-1,170', '最新库存': '50', '库存后结余': '-1,120' })) assert.equal(total[field], expected, mode + '/' + field);
     const cumulativeExport = await exported(); assert.equal(cumulativeExport[0]['计算方式'], '累计月份'); assert.equal(cumulativeExport[0]['净供应 2026年9-11月'], 660);
     assert.equal(cumulativeExport[0]['库存后结余 2026年9-11月'], -1120);
     evidence.push({ mode, individual, cumulative }); checks.push(mode + ': label selection, per-month values, cumulative sums and Excel agree');
