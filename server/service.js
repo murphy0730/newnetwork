@@ -206,7 +206,7 @@ class Service {
     for (let i = 0; i < rows.length; i++) { const x = rows[i]; if (water == null || !x.complete) { water = null; continue; } water += x.supply - x.demand - (x.remove || 0); if (water < -C.EPS && !firstShortage) firstShortage = spanMonths[i]; }
     return { ...base, complete, supply, demand, raw, add, remove, gap: complete && engine.graph.parents.get(r.code).length ? demand + remove - supply : null, inventory, coverageGap: complete && inventory != null ? demand + remove - supply - inventory : null, firstShortage, risks: [...new Set(rows.flatMap(x => x.risks))], monthly: rows.map((x, i) => ({ month: spanMonths[i], raw: x.raw ?? 0, add: x.add ?? 0, remove: x.remove ?? 0, supply: x.supply, demand: x.demand, gap: x.gap, complete: x.complete })) };
   }
-  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '', category: r.attr.part_category || '', raw: r.raw ?? 0, add: r.add ?? 0, remove: r.remove ?? 0, supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
+  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '未知部门', category: r.attr.part_category || '', raw: r.raw ?? 0, add: r.add ?? 0, remove: r.remove ?? 0, supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
   insights(q, actor) { return require('./insights')(this, q, actor); }
   prepareSimulation(q, actor) { const { engine, trace } = this.context(q, actor); return { ready: true, trace, codes: engine.graph.codes.length, note: '推演线程已装载该基线；后续模拟仍为独立情景，不修改基线。' }; }
   detail(q, actor) {
@@ -257,7 +257,31 @@ class Service {
     for (const r of rows) for (const s of r.sites.sites) { if (!sites.has(s.key)) sites.set(s.key, { code: s.key, name: s.name, codes: 0, single: 0, shortage: 0, quantity: 0 }); const x = sites.get(s.key); x.codes++; x.quantity += s.qty; if (r.sites.single) x.single++; if (r.gap > C.EPS) x.shortage++; }
     const top = rows.filter(r => r.gap > C.EPS).slice(0, 20);
     const heatCodes = top.slice(0, 12).map(r => r.code), matrix = e.months.map(m => { return heatCodes.map(c => e.row(c, m, mode, source).gap); });
-    indexed.report = { sites: [...sites.values()].sort((a, b) => b.shortage - a.shortage), top: top.map(r => this.compact(r)), single: rows.filter(r => r.sites.single).slice(0, 200).map(r => this.compact(r)), singleTotal: rows.filter(r => r.sites.single).length, heatmap: heatCodes.map((code, i) => ({ code, cells: matrix.map(row => row[i]) })), months: e.months, note: '加工地数量为当前月计划安排；无历史指令时不生成交期健康度结论。' };
+    // 全局聚合（报告页执行摘要）：KPI、产业分布、逐月趋势、叠加风险
+    const kpi = {
+      total: rows.length,
+      shortage: rows.filter(r => r.gap > C.EPS).length,
+      gapSum: rows.reduce((s, r) => s + (r.gap > C.EPS ? r.gap : 0), 0),
+      coverageShortage: rows.filter(r => (r.coverageGap || 0) > C.EPS).length,
+      single: rows.filter(r => r.sites.single).length,
+      concentrated: rows.filter(r => r.risks.includes('加工地高度集中')).length,
+      incomplete: rows.filter(r => !r.complete).length,
+      singleShortage: rows.filter(r => r.sites.single && r.gap > C.EPS).length
+    };
+    const depts = new Map();
+    for (const r of rows) {
+      const d = r.attr.make_dept || '未维护部门';
+      if (!depts.has(d)) depts.set(d, { dept: d, codes: 0, shortage: 0, gapSum: 0 });
+      const x = depts.get(d); x.codes++;
+      if (r.gap > C.EPS) { x.shortage++; x.gapSum += r.gap; }
+    }
+    // 逐月趋势：balance 走每月缓存矩阵，代价为 月数×编码数 次数组读
+    const monthly = e.months.map(m => {
+      let shortage = 0, gapSum = 0;
+      for (const code of e.graph.codes) { const b = e.balance(code, m, mode, source); if (b.gap != null && b.gap > C.EPS) { shortage++; gapSum += b.gap; } }
+      return { month: m, shortage, gapSum };
+    });
+    indexed.report = { kpi, depts: [...depts.values()].sort((a, b) => b.gapSum - a.gapSum || b.shortage - a.shortage), monthly, sites: [...sites.values()].sort((a, b) => b.shortage - a.shortage), top: top.map(r => this.compact(r)), single: rows.filter(r => r.sites.single).slice(0, 200).map(r => this.compact(r)), singleTotal: rows.filter(r => r.sites.single).length, heatmap: heatCodes.map((code, i) => ({ code, cells: matrix.map(row => row[i]) })), months: e.months, note: '加工地数量为当前月计划安排；无历史指令时不生成交期健康度结论。' };
     return { trace, ...indexed.report };
   }
   simulate(body, actor) {

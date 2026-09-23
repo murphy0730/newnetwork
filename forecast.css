@@ -94,3 +94,8 @@ select option { background: #ffffff; color: #1a2740; }
 :root[data-theme="light"] .ins-fact.lv-unknown .ins-lv { color: #5b6d8c; border-color: #b9c7dc; }
 :root[data-theme="light"] .ins-fact.lv-ok .ins-lv { color: #0a7d58; border-color: #57b894; }
 :root[data-theme="light"] .ins-fact.lv-info .ins-lv { color: #1d6fe0; border-color: #9dbef0; }
+/* 报告页执行摘要：结论列表 */
+.fc-findings { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.fc-findings li { position: relative; padding: 9px 14px 9px 30px; background: rgba(24, 48, 88, .42); border: 1px solid var(--line-soft); border-radius: 8px; line-height: 1.7; font-size: 13px; }
+.fc-findings li::before { content: ""; position: absolute; left: 13px; top: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--brand-2, #3d8bff); }
+:root[data-theme="light"] .fc-findings li { background: #eef4fc; color: #2c3f5e; }
