@@ -14,6 +14,9 @@ class Engine extends C.Engine {
     for (const r of e.t.forecast) if (r.plan_date === e.version) { e.forecast.push(r); const key = JSON.stringify([r.code, r.month]); if (!e.byCodeMonth.has(key)) e.byCodeMonth.set(key, []); e.byCodeMonth.get(key).push(r); if (!e.byCode.has(r.code)) e.byCode.set(r.code, []); e.byCode.get(r.code).push(r); }
     e.inventory = new Map(); e.inventoryDates = new Set(); e.excludedInventory = 0;
     for (const r of e.t.inventory) { e.inventoryDates.add(r.date); if (/^(生产-三品|备件-)/.test(r.sub_type)) { e.excludedInventory++; continue; } const key = JSON.stringify([r.code, r.date]); e.inventory.set(key, (e.inventory.get(key) || 0) + r.qty); }
+    // 表4取值规则：快照按日刷新（每日零点一版），取「当日最新」——不晚于今天的最大快照日期；无则库存未知
+    e.inventorySnapshotDate = null;
+    for (const d of e.inventoryDates) if (d <= C.today() && (!e.inventorySnapshotDate || d > e.inventorySnapshotDate)) e.inventorySnapshotDate = d;
     e.adjustments = new Map(); e.periodAdds = new Map();
     if (e.cfg.input_mode === 'raw') for (const r of e.t.adjust) { const key = JSON.stringify([r.code, r.month]); if (!e.adjustments.has(key)) e.adjustments.set(key, { add: 0, remove: 0 }); e.adjustments.get(key)[r.direction === '供应' ? 'add' : 'remove'] += r.qty; }
     for (const [key, adj] of e.adjustments) { const [code, month] = JSON.parse(key); if (e.months.includes(month)) e.periodAdds.set(code, (e.periodAdds.get(code) || 0) + adj.add); }
@@ -59,7 +62,7 @@ class Engine extends C.Engine {
     const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: C.siteSummary(moRows) } : net;
     const complete = !!numeric[index * 2 + 1], knownDemand = numeric[index * 2];
     const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
-    const snapshotDate = month + '-01', inventory = this.inventoryDates.has(snapshotDate) ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
+    const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
     if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, C.siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
     const attr = this.attributes.get(code) || {}, risks = [];
     if (!complete) risks.push('预测或产业数据不完整');

@@ -26,7 +26,7 @@
     {
       "id": "inventory_coverage",
       "level": "attention",
-      "text": "月初库存可覆盖当月总量缺口，但预测本身仍不匹配；月内产出时点尚未验证。",
+      "text": "最新库存可覆盖当月总量缺口，但预测本身仍不匹配；月内产出时点尚未验证。",
       "evidence": {
         "inventory": 200,
         "coverageGap": -100

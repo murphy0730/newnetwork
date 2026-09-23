@@ -26,11 +26,12 @@ test('cross-industry boundary follows 表6 make_dept; merged-industry logic remo
   assert.equal(e2.compute(m, 'cross').get('M').demand, 1000);
   assert.equal(e2.compute(m, 'cross').get('L').demand, 2000);
   assert.deepEqual(e2.relations('L', 'cross').map(r => [r.code, r.kind]), [['U', '本产业最顶层']]);
-  // make_dept 未维护 → 产业未确认且下游标记数据不完整
+  // make_dept 未维护 → 统一按「未知部门」作为一个产业参与计算：M 与 L 不同部门，边界在 M
   const unk = chain('X', 'Y', 'Y'); delete unk.s.tables.attributes.find(r => r.code === 'M').make_dept;
   const e3 = new C.Engine(unk.s);
-  assert.equal(e3.relations('L', 'cross')[0].kind, '产业未确认');
-  assert.equal(e3.compute(m, 'cross').get('L').complete, false);
+  assert.equal(e3.dept('M'), '未知部门');
+  assert.equal(e3.relations('L', 'cross')[0].kind, '跨产业首个编码');   // 未知部门 ≠ Y 部 → 跨产业边界
+  assert.equal(e3.compute(m, 'cross').get('L').complete, true);
 });
 
 test('summary table aggregates up to 6 months with rolling inventory and cross-industry codes', () => {

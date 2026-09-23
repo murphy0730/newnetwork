@@ -33,7 +33,28 @@ test('missing forecasts are unknown, explicit zero is a real plan; versions stay
   const { s, m, v } = example(); s.tables.forecast = s.tables.forecast.filter(r => r.code !== 'C' || r.month !== m); s.tables.forecast.push({ code: 'C', month: m, plan_date: '2020-01-01', qty: 30000, site_code: 'S3' }); const e = new C.Engine(s, v); assert.equal(e.compute(m).get('A').gap, null); s.tables.forecast.push({ code: 'C', month: m, plan_date: v, qty: 0, site_code: 'S3' }); assert.equal(new C.Engine(s, v).compute(m).get('A').demand, 800);
 });
 test('inventory snapshot exclusions and cumulative inventory counted once', () => {
-  const { s, m } = example(); s.tables.inventory.push({ code: 'A', date: m + '-01', qty: 999, sub_type: '备件-机修' }, { code: 'A', date: m + '-02', qty: 999, sub_type: '正常' }); const e = new C.Engine(s); const c = e.cumulative('A', m, 3, 'cross'); assert.equal(c.supply, 3000); assert.equal(c.demand, 3300); assert.equal(c.coverageGap, 100); assert.equal(c.firstShortage, C.addMonth(m, 2)); assert.equal(e.compute(m).get('A').inventory, 200);
+  // 表4新规则：取当日最新快照（不晚于今天的最大日期）。夹具自带当月1日 200；今天的正常快照 999 生效，备件类型仍被排除
+  const { s, m } = example(); s.tables.inventory.push({ code: 'A', date: m + '-01', qty: 999, sub_type: '备件-机修' }, { code: 'A', date: C.today(), qty: 999, sub_type: '正常' }); const e = new C.Engine(s);
+  assert.equal(e.inventorySnapshotDate, C.today());
+  const c = e.cumulative('A', m, 3, 'cross'); assert.equal(c.supply, 3000); assert.equal(c.demand, 3300); assert.equal(c.coverageGap, -699); assert.equal(c.firstShortage, null); assert.equal(e.compute(m).get('A').inventory, 999);
+});
+
+test('表4库存取当日最新快照：每日零点刷新，晚于今天的快照不取用；无可取快照则未知', () => {
+  const { s, m } = example();
+  const day = n => { const t = new Date(C.today() + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  // 夹具快照在当月1日（≤今天）：最新即当月1日
+  assert.equal(new C.Engine(s).inventorySnapshotDate, m + '-01');
+  // 有今天的快照时取今天；明天的快照不取用
+  s.tables.inventory.push({ code: 'A', date: day(0), qty: 500, sub_type: '正常' }, { code: 'A', date: day(1), qty: 999, sub_type: '正常' });
+  const e1 = new C.Engine(s);
+  assert.equal(e1.inventorySnapshotDate, day(0));
+  assert.equal(e1.compute(m).get('A').inventory, 500);
+  assert.equal(e1.compute(m).get('A').snapshotDate, day(0));
+  // 全部快照都晚于今天 → 库存未知（不硬取未来数据）
+  s.tables.inventory = s.tables.inventory.filter(r => r.date > C.today());
+  const e2 = new C.Engine(s);
+  assert.equal(e2.inventorySnapshotDate, null);
+  assert.equal(e2.compute(m).get('A').inventory, null);
 });
 test('risk paths include non-critical branches; missing cycle data never means zero duration', () => {
   const { s, m } = example(); s.tables.attributes.push({ code: 'E', make_dept: '基础制造部', lead_mean: 1, lead_cv: .8 }); s.tables.bom.push({ parent: 'B', child: 'E', qty: 1 }); s.tables.forecast.push({ code: 'E', plan_date: C.today(), month: m, qty: 0, site_code: 'S5' }); let e = new C.Engine(s), p = e.paths('B', m, 'cross'); assert.deepEqual(p.critical.path, ['B', 'A', 'D']); assert.ok(p.edges.some(r => r.child === 'E')); delete s.tables.attributes.find(r => r.code === 'E').lead_mean; e = new C.Engine(s); assert.equal(e.criticalCache.get('B').complete, false);

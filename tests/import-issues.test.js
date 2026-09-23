@@ -20,16 +20,17 @@ test('all files and later CSV batches are scanned; reports exceed parser/UI erro
   assert.ok(rows.length > 2501); assert.equal(rows.find(r => r[5] === 'P2000')[4], '2002');
 });
 
-test('successful scope filtering reports empty departments, small BOM ratios and every excluded input row', async () => {
+test('空 make_dept 按「未知部门」保留在范围内；小配比 BOM 仍只进清单', async () => {
   const root = dir(), output = path.join(root, 'result.supply');
   const data = C.sample(); data.tables.attributes.find(r => r.code === 'A').make_dept = '';
   data.tables.bom.push({ parent: 'B', child: 'D', qty: .001 });
   const result = await run({ output, body: { batches: Object.entries(data.tables).filter(([, rows]) => rows.length).map(([table, rows]) => ({ table, rows })) } });
   assert.equal(result.issues.errors, 0); assert.ok(result.issues.warnings > 0);
-  for (const table of ['attributes', 'forecast', 'inventory', 'bom']) assert.ok(result.issues.byTable[table] > 0);
+  assert.ok(result.issues.byTable.attributes > 0);   // 空 make_dept 仍记数据质量提示
+  assert.ok(result.issues.byTable.bom > 0);          // 小配比仍记提示并过滤
   assert.ok(fs.readFileSync(output + '.issues.attributes.csv', 'utf8').includes('make_dept'));
   assert.ok(fs.readFileSync(output + '.issues.bom.csv', 'utf8').includes('0.01'));
-  const artifact = new Artifact(output); try { assert.ok([...artifact.rows('table/forecast')].every(r => r.code !== 'A')); } finally { artifact.close(); }
+  const artifact = new Artifact(output); try { assert.ok([...artifact.rows('table/forecast')].some(r => r.code === 'A')); } finally { artifact.close(); }   // A 按「未知部门」保留在分析范围
 });
 
 test('every supported API input table gets its own downloadable issue file', async () => {
@@ -69,7 +70,7 @@ test('filter-rule data never blocks CSV import: small BOM ratios and empty make_
   assert.ok(attrCsv.includes('make_dept'));
   const artifact = new Artifact(output); try {
     assert.equal([...artifact.rows('table/bom')].length, 0); // 过滤后不进入后续计算
-    assert.deepEqual([...artifact.rows('table/forecast')].map(r => r.code), ['A']); // B 被范围预处理过滤
+    assert.deepEqual([...artifact.rows('table/forecast')].map(r => r.code), ['A', 'B']); // B 的 make_dept 为空，按「未知部门」保留在范围内
   } finally { artifact.close(); }
 });
 

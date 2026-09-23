@@ -92,7 +92,7 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
     monthly: months.map(m => { const net = engine.net(link.code, m); if (!monthSet.has(m)) return { month: m, forecast: null, remove: net.remove, netDemand: net.demand, demand: null }; return { month: m, forecast: net.raw, remove: net.remove, netDemand: net.demand, demand: Math.abs(net.raw - net.remove) * link.coeff }; }) }));
   const applicable = targets.length > 0;
   const monthly = months.map((m, i) => {
-    let own = monthSet.has(m) ? engine.row(base.code, m, 'direct', source) : { known: false, raw: null, add: null, remove: null, supply: null, inventory: engine.inventoryDates.has(m + '-01') ? engine.inventory.get(JSON.stringify([base.code, m + '-01'])) || 0 : null, risks: [], sites: C.siteSummary([]) };
+    let own = monthSet.has(m) ? engine.row(base.code, m, 'direct', source) : { known: false, raw: null, add: null, remove: null, supply: null, inventory: engine.inventorySnapshotDate ? engine.inventory.get(JSON.stringify([base.code, engine.inventorySnapshotDate])) || 0 : null, risks: [], sites: C.siteSummary([]) };
     if (monthSet.has(m) && !own.known && source === 'forecast') own = { ...own, known: true, zeroFilled: true, raw: 0, supply: own.add || 0 };
     const demandKnown = targets.every(t => t.kind !== '产业未确认' && t.monthly[i].demand != null);
     const demand = applicable && demandKnown ? targets.reduce((sum, t) => sum + t.monthly[i].demand, 0) : null;

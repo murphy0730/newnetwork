@@ -70,7 +70,7 @@ class Store {
     if (!artifact) return this.emptyInfo(revision, latest, revision ? '现有数据是旧版快照，请从数据管理启动重建或离线构建；在线服务不会重算' : null);
     const m = artifact.manifest, version = m.versions.at(-1);
     const categories = m.categories || [...new Set(this.table('attributes', null, 0, 1000000).rows.map(r => r.part_category).filter(Boolean))].sort(); // 旧构建的兜底
-    const departments = m.departments || [...new Set(this.table('attributes', null, 0, 1000000).rows.map(r => r.make_dept).filter(Boolean))].sort(); // 旧构建的兜底
+    const departments = m.departments || [...new Set(this.table('attributes', null, 0, 1000000).rows.map(r => r.make_dept || '未知部门'))].sort(); // 旧构建的兜底
     return { revision, kind: m.kind, updated_at: latest.created_at, config: m.config, counts: m.counts, versions: m.versions, months: m.monthsByVersion[version] || [], codes: m.codes, edges: m.edges, levels: m.levels, precomputed: { ...m.statsByVersion[version], restored: true, buildId: m.buildId }, sites: m.sites, categories, departments, warnings: m.warnings, history: this.history(), needsBuild: false };
   }
   emptyInfo(revision, latest, message) { return { revision, kind: latest?.kind || 'empty', updated_at: latest?.created_at || null, config: C.defaults, counts: Object.fromEntries(Object.keys(C.schemas).map(k => [k, 0])), versions: [], months: [], codes: 0, edges: 0, levels: 0, sites: [], categories: [], departments: [], warnings: message ? [message] : [], history: this.history(), needsBuild: !!message }; }

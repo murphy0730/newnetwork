@@ -67,7 +67,7 @@
     if (!/^[+]?\d*\.?\d+(?:e[+-]?\d+)?$/i.test(s) || !Number.isFinite(n) || n < 0) throw Error('应为非负有限数值');
     return n;
   }
-  // 库存可用量允许负数：按减法计入月初库存
+  // 库存可用量允许负数：按减法计入最新库存快照
   function numSigned(v, optional = false) {
     if (text(v) === '') { if (optional) return null; throw Error('数量不能为空'); }
     const s = text(v), n = Number(s);
@@ -187,7 +187,7 @@
       if (missing.length) warnings.push(`${missing.length}个编码缺制造属性（${missing.slice(0, 6).join('、')}），产业/周期分析不完整`);
     }
     const noDept = t.attributes.filter(r => !r.make_dept).length;
-    if (noDept) warnings.push(`${noDept}个编码未维护制造部门(make_dept)，跨产业识别标记为产业未确认`);
+    if (noDept) warnings.push(`${noDept}个编码未维护制造部门(make_dept)，统一按「未知部门」作为一个产业参与计算`);
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && !r.site_name)) warnings.push('部分正数量预测缺加工地，相关单一加工地判定为数据不完整');
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && r.site_name)) warnings.push('部分加工地只有名称，将按名称临时识别；建议补加工地代码');
     if (!t.inventory.length) warnings.push('尚无库存快照，仅能计算预测匹配；库存覆盖结果显示未知');
@@ -231,6 +231,9 @@
       if (months.length) for (let m = months[0]; m <= months.at(-1); m = addMonth(m, 1)) this.months.push(m);
       this.inventory = new Map(); this.inventoryDates = new Set(this.t.inventory.map(r => r.date)); this.excludedInventory = 0;
       for (const r of this.t.inventory) { if (/^(生产-三品|备件-)/.test(r.sub_type)) { this.excludedInventory++; continue; } const k = JSON.stringify([r.code, r.date]); this.inventory.set(k, (this.inventory.get(k) || 0) + r.qty); }
+      // 表4取值规则：快照按日刷新（每日零点一版），取「当日最新」——不晚于今天的最大快照日期；无则库存未知
+      this.inventorySnapshotDate = null;
+      for (const d of this.inventoryDates) if (d <= today() && (!this.inventorySnapshotDate || d > this.inventorySnapshotDate)) this.inventorySnapshotDate = d;
       this.adjustments = new Map();
       if (this.cfg.input_mode === 'raw') for (const r of this.t.adjust) { const k = JSON.stringify([r.code, r.month]); if (!this.adjustments.has(k)) this.adjustments.set(k, { add: 0, remove: 0 }); this.adjustments.get(k)[r.direction === '供应' ? 'add' : 'remove'] += r.qty; }
       this.periodAdds = new Map(); for (const [key, adjustment] of this.adjustments) { const [code, month] = JSON.parse(key); if (this.months.includes(month)) this.periodAdds.set(code, (this.periodAdds.get(code) || 0) + adjustment.add); }
@@ -248,7 +251,7 @@
       }
     }
     // 产业直接按表6制造属性维护基表的 make_dept 区分：每个制造部门即一个产业，不再使用合并映射
-    dept(code) { const a = this.attributes.get(code); return a && a.make_dept ? a.make_dept : undefined; }
+    dept(code) { const a = this.attributes.get(code); return a ? (a.make_dept || '未知部门') : undefined; }   // make_dept 为空统一按「未知部门」作为一个部门参与计算
     sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {
       if (!this.netCache.has(month)) { if (this.netCache.size >= 2) this.netCache.delete(this.netCache.keys().next().value); this.netCache.set(month, new Map()); }
@@ -291,7 +294,7 @@
         // 缺口把自身使用剔除计入需求侧：缺口 = 上层需求 + 使用剔除 − 净供应（等价于剔除先扣减自身可用量）
         const knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0, demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
         if (!saved) { numeric[index * 2] = knownDemand; numeric[index * 2 + 1] = Number(complete); }
-        const snapshotDate = month + '-01', inventory = this.inventoryDates.has(snapshotDate) ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
+        const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
         if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
         const periodSites = this.periodSiteCache.get(code);
         const attr = this.attributes.get(code) || {}, risks = [];
@@ -466,11 +469,11 @@
     }
     return s;
   }
-  // 编码范围预处理：表1编码 ∩ 表6已维护制造部门(make_dept非空) = 最终编码范围；
+  // 编码范围预处理：表1编码 ∩ 表6已维护（有属性行即算维护，make_dept 为空按「未知部门」参与计算）= 最终编码范围；
   // 据此筛选预测、库存快照与BOM，范围外数据不参与图呈现与分析
   function scopeTables(tables) {
     const withDept = new Set();
-    for (const r of tables.attributes || []) if (r.make_dept) withDept.add(r.code);
+    for (const r of tables.attributes || []) withDept.add(r.code);
     const before = { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length };
     if (!withDept.size) return { range: null, skipped: true, before, after: { ...before } }; // 表6为空时没有筛选依据，跳过预处理
     const range = new Set();

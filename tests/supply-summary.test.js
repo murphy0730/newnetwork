@@ -153,7 +153,11 @@ test('individual months include inventory only in the selected first month; cumu
   const data = fixture();
   // Supply 650, 750, 850; top demand 700, direct/cross demand 340 each month.
   for (const r of data.tables.forecast) if (r.code === 'C') r.qty = { '2026-09': 650, '2026-10': 750, '2026-11': 850 }[r.month] ?? r.qty;
-  for (const r of data.tables.inventory) if (r.code === 'C') r.qty = { '2026-09-01': 30, '2026-10-01': 100, '2026-11-01': 5 }[r.date] ?? r.qty;
+  // 表4新规则：快照按日刷新（每日零点一版），取不晚于今天的最新一版。C 的快照放在昨天（30）和今天（100），与分析月份无关
+  const day = n => { const t = new Date(C.today() + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  const D_TODAY = day(0), D_YESTERDAY = day(-1);
+  data.tables.inventory = data.tables.inventory.filter(r => r.code !== 'C');
+  data.tables.inventory.push({ code: 'C', date: D_YESTERDAY, qty: 30, sub_type: '正常库存' }, { code: 'C', date: D_TODAY, qty: 100, sub_type: '正常库存' });
   s.publish(data, 1, 'test', 'test');
   for (const mode of ['direct', 'cross', 'top']) {
     const args = { ...q, mode, span: 3, code: 'C' };
@@ -163,25 +167,25 @@ test('individual months include inventory only in the selected first month; cumu
     const separate = individual.rows[0].periods, combined = cumulative.rows[0].periods[0];
     assert.deepEqual(individual.periods.map(r => r.inventoryIncluded), [true, false, false]);
     assert.deepEqual(separate.map(r => r.inventoryIncluded), [true, false, false]);
-    assert.deepEqual(separate.map(r => r.inventory), [30, null, null]);
+    assert.deepEqual(separate.map(r => r.inventory), [100, null, null]);   // 当日最新快照（今天），而非分析月1日
     assert.deepEqual(separate.map(r => r.supply), [650, 750, 850]);
-    assert.equal(combined.supply, 2250); assert.equal(combined.inventory, 30);
+    assert.equal(combined.supply, 2250); assert.equal(combined.inventory, 100);
     assert.equal(combined.demand, separate.reduce((sum, r) => sum + r.demand, 0));
-    assert.equal(combined.coverageGap, combined.demand - 2250 - 30);
+    assert.equal(combined.coverageGap, combined.demand - 2250 - 100);
     assert.deepEqual(individual.rows[0].targets.map(t => t.demand), cumulative.rows[0].targets.map(t => t.demand));
     if (mode === 'top') {
       assert.deepEqual(separate.map(r => r.gap), [50, -50, -150]);
-      assert.deepEqual(separate.map(r => r.coverageGap), [20, null, null]);
-      assert.equal(combined.coverageGap, -180); assert.equal(combined.firstShortage, '2026-09');
+      assert.deepEqual(separate.map(r => r.coverageGap), [-50, null, null]);
+      assert.equal(combined.coverageGap, -250); assert.equal(combined.firstShortage, null);   // 最新库存100后逐月水位均为正
     }
   }
   const shifted = s.list({ ...q, month: '2026-10', code: 'C', mode: 'cross', span: 3, periodMode: 'individual' }, 'test').rows[0].periods;
-  assert.equal(shifted[0].inventory, 100); assert.equal(shifted[0].gap, -410); assert.equal(shifted[0].coverageGap, -510);
+  assert.equal(shifted[0].inventory, 100); assert.equal(shifted[0].gap, -410); assert.equal(shifted[0].coverageGap, -510);   // 未来月份同样取当日最新
   assert.equal(shifted[1].inventoryIncluded, false); assert.equal(shifted[1].gap, -510); assert.equal(shifted[1].coverageGap, null);
-  data.tables.inventory = data.tables.inventory.filter(r => r.date !== '2026-09-01');
+  data.tables.inventory = data.tables.inventory.filter(r => r.date !== D_TODAY);   // 删掉今天的快照 → 回退到昨天
   s.publish(data, 2, 'test', 'test');
   const missingInventory = s.list({ ...q, code: 'C', mode: 'cross', span: 3, periodMode: 'individual' }, 'test').rows[0].periods;
-  assert.equal(missingInventory[0].inventoryIncluded, true); assert.equal(missingInventory[0].coverageGap, null); assert.equal(missingInventory[0].gap, -310);
+  assert.equal(missingInventory[0].inventoryIncluded, true); assert.equal(missingInventory[0].coverageGap, -340); assert.equal(missingInventory[0].gap, -310);   // -310-30（昨日快照）
   assert.equal(missingInventory[1].gap, -410); assert.equal(missingInventory[1].complete, true);
   assert.throws(() => s.list({ ...q, periodMode: 'bad' }, 'test'), /月份计算方式无效/);
   for (const periodMode of ['individual', 'cumulative']) assert.throws(() => s.list({ ...q, span: 7, periodMode }, 'test'), /超出范围/);
