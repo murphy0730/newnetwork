@@ -33,6 +33,10 @@ build-output/
 *.supply
 *.supply.partial*
 
+# 打包分发产物（dist-package/ 是发行包目录快照，含业务表格与运行时数据；*.zip 是分发压缩包）
+dist-package/
+*.zip
+
 # 本地工具数据
 .workbuddy/
 
