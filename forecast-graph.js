@@ -479,6 +479,42 @@
     setEdgeOpacity(v) { this.edgeOpacity = Math.min(1, Math.max(0.05, Number(v) || 0.8)); return this.restyle(); }
     setShowRatio(v) { this.showRatio = !!v; return this.restyle(); }
     select(code) { this.selected = code; return this.render(); }
+    // 编程式复现单击节点的效果：锁定该编码并高亮整条关联链路（汇总表跳转联动用）。
+    selectChain(code) {
+      this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
+        if (!this.graph || !this._nodeMap?.has(code)) return;
+        this.chainCode = code; this.selected = code;
+        await this._applyStates();
+      });
+      return this._renderQueue;
+    }
+    // 居中并适当放大到指定编码（布局切换/钻取联动用）。
+    // zoomTo 的 center 参数语义在本 bundle 未实测，且缩放动画是异步的：
+    // 用 zoomTo + getClientByCanvas + translateBy（均已实测可靠），并在动画沉降后做校正平移。
+    focusNode(code) {
+      if (!this.graph || !this._nodeMap?.has(code)) return Promise.resolve();
+      this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
+        if (!this.graph) return;
+        try {
+          const z = Math.min(2.5, Math.max(this.graph.getZoom() * 1.6, 0.55));
+          try { await this.graph.zoomTo(z); } catch { /* 忽略 */ }
+          const fix = async () => {
+            if (!this.graph) return true;
+            const c = this.graph.getClientByCanvas(this.graph.getElementPosition(code));
+            const rect = this.el.getBoundingClientRect();
+            const dx = rect.left + rect.width / 2 - c[0], dy = rect.top + rect.height / 2 - c[1];
+            if (Math.abs(dx) <= 2 && Math.abs(dy) <= 2) return true;
+            try { await this.graph.translateBy([dx, dy]); } catch { /* 忽略 */ }
+            return false;
+          };
+          for (let i = 0; i < 3; i++) {           // 缩放/平移动画沉降后校正，最多 3 轮
+            if (await fix()) break;
+            await new Promise(r => setTimeout(r, 320));
+          }
+        } catch { /* 忽略 */ }
+      });
+      return this._renderQueue;
+    }
     fit() { this.graph.fitView(); }
     zoomIn() { this.graph.zoomBy(1.25); }
     zoomOut() { this.graph.zoomBy(0.8); }
