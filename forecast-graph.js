@@ -223,7 +223,7 @@
       if ((n.gap || 0) > 1e-8) { stroke = '#ff7899'; lineWidth = 3; }
       else if (n.single) { stroke = '#f4c463'; lineWidth = 3; }
       const size = n.code === this.selected ? 30 : 24;
-      return { size, fill, stroke, lineWidth };
+      return { size, fill, stroke: n.passThrough && stroke === '#0b1222' ? '#8c99a8' : stroke, lineWidth, lineDash: n.passThrough ? [3, 2] : undefined };   // 透传节点：虚线灰边
     }
 
     _riskColor(n) {

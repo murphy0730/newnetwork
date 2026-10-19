@@ -251,7 +251,7 @@
       }
     }
     // 产业直接按表6制造属性维护基表的 make_dept 区分：每个制造部门即一个产业，不再使用合并映射
-    dept(code) { const a = this.attributes.get(code); return a ? (a.make_dept || '未知部门') : undefined; }   // make_dept 为空统一按「未知部门」作为一个部门参与计算
+    dept(code) { const a = this.attributes.get(code); return a && a.make_dept ? a.make_dept : '未知部门'; }   // make_dept 为空或无表6维护行，统一按「未知部门」作为一个部门参与计算
     sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {
       if (!this.netCache.has(month)) { if (this.netCache.size >= 2) this.netCache.delete(this.netCache.keys().next().value); this.netCache.set(month, new Map()); }
@@ -282,6 +282,19 @@
       }
       const result = [...targets.values()]; if (this.relationCache.size > 256) this.relationCache.delete(this.relationCache.keys().next().value); this.relationCache.set(key, result); return result;
     }
+    // 单条 parent→child 边的有效需求：与 matrix 的传导规则完全一致。
+    // 有预测记录时按原口径取 parent 自身需求；无预测记录时取 parent 的上层累计需求（透传上溯）。
+    edgeDemand(parent, child, month, mode = 'cross') {
+      const net = this.net(parent, month);
+      const crossEdge = mode === 'cross' && !this.sameIndustry(parent, child);
+      const noParents = !this.graph.parents.get(parent).length;
+      const originate = mode === 'direct' || crossEdge || noParents;
+      if (originate && net.known) return { value: Math.abs(net.demand || 0), known: true };
+      const computed = this.compute(month, mode).get(parent), value = computed ? computed.knownDemand : 0;
+      // 版本覆盖该月但编码当月无预测记录时按 0 计入；仅当编码在本版本完全无预测记录且上游也无预测时才为未知
+      const zeroFill = (this.byCode.get(parent) || []).length > 0;
+      return { value, known: zeroFill || !!(computed && computed.demandKnown) };
+    }
     compute(month, mode = 'cross', source = 'forecast') {
       const key = JSON.stringify([month, mode, source]); if (this.monthCache.has(key)) return this.monthCache.get(key);
       const result = new Map(), incoming = new Map(), incomingKnown = new Map(), saved = this.materialized.get(key), numeric = saved || new Float64Array(this.graph.order.length * 2);
@@ -297,24 +310,29 @@
         const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
         if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
         const periodSites = this.periodSiteCache.get(code);
+        const noParentsCode = !this.graph.parents.get(code).length, demandKnown = noParentsCode ? net.known : (net.known || knownDemand > 0), passThrough = !net.known && !noParentsCode && knownDemand > 0;
         const attr = this.attributes.get(code) || {}, risks = [];
-        if (!complete) risks.push('预测或产业数据不完整');
+        if (!complete && !passThrough) risks.push('预测或产业数据不完整');
         if (gap > EPS) risks.push('预测总量不足');
         if (own.sites.single) risks.push('当月单一加工地');
         if (own.sites.count > 1 && own.sites.maxShare >= this.cfg.concentration) risks.push('加工地高度集中');
         if (own.sites.unassigned > EPS) risks.push('加工地未完整分配');
         if (attr.lead_cv != null && attr.lead_cv >= this.cfg.cv_threshold) risks.push('加工周期波动');
         if (attr.lead_mean == null) risks.push('加工周期未维护');
-        result.set(code, { code, attr, ...own, complete, demand, knownDemand, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
+        result.set(code, { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
         if (saved) continue;
         // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项（子项仅下达自身预测）
         // 剔除超过预测时净需求为负，负值视为父项的消耗缺口，按绝对值向子项传导需求（净需求本身保留符号用于展示）
+        // 当月无预测记录的编码为透传节点：取其上层累计需求继续上溯，不再传 0 或提前断链
         const noParents = !this.graph.parents.get(code).length;
         for (const edge of this.graph.children.get(code)) {
           const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
           const originate = mode === 'direct' || crossEdge || noParents;
-          const outgoing = originate ? Math.abs(net.demand || 0) : knownDemand;
-          const outgoingKnown = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : incomingKnown.get(code) !== false;
+          const hasOwn = net.known;
+          const outgoing = originate && hasOwn ? Math.abs(net.demand || 0) : knownDemand;
+          const outgoingKnown = hasOwn
+            ? (crossEdge ? this.dept(code) != null && this.dept(edge.child) != null : originate ? true : incomingKnown.get(code) !== false)
+            : (noParents ? false : incomingKnown.get(code) !== false);
           const val = (incoming.get(edge.child) || 0) + outgoing * edge.qty;
           if (!Number.isFinite(val)) throw Error('BOM累计需求超出计算范围'); incoming.set(edge.child, val);
           if (!outgoingKnown) incomingKnown.set(edge.child, false);
@@ -469,8 +487,8 @@
     }
     return s;
   }
-  // 编码范围预处理：表1编码 ∩ 表6已维护（有属性行即算维护，make_dept 为空按「未知部门」参与计算）= 最终编码范围；
-  // 据此筛选预测、库存快照与BOM，范围外数据不参与图呈现与分析
+  // 编码范围预处理：表1/表4 仍按「表1编码 ∩ 表6有维护行」过滤；
+  // 表3 不按表1筛选，保留全量 BOM 网络（无预测记录的编码作为透传节点参与上溯计算）
   function scopeTables(tables) {
     const withDept = new Set();
     for (const r of tables.attributes || []) withDept.add(r.code);
@@ -480,7 +498,7 @@
     for (const r of tables.forecast || []) if (withDept.has(r.code)) range.add(r.code);
     tables.forecast = tables.forecast.filter(r => range.has(r.code));
     tables.inventory = tables.inventory.filter(r => range.has(r.code));
-    tables.bom = tables.bom.filter(r => range.has(r.parent) && range.has(r.child));
+    // 不再执行：tables.bom = tables.bom.filter(r => range.has(r.parent) && range.has(r.child));
     return { range: range.size, skipped: false, before, after: { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length } };
   }
 

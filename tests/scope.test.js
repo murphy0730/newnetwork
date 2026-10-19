@@ -12,12 +12,12 @@ test('编码范围预处理：表1编码 ∩ 表6已维护（make_dept 为空按
   assert.equal(r.range, 3); // A、B、X 在范围；B 的 make_dept 为空按「未知部门」保留；C 不在表6，出范围
   assert.deepEqual(t.forecast.map(x => x.code), ['A', 'B', 'X']);
   assert.deepEqual(t.inventory.map(x => x.code), ['A']);
-  assert.deepEqual(t.bom.map(x => x.id), ['1', '2']);
-  assert.deepEqual([r.before.bom, r.after.bom], [3, 2]);
+  assert.deepEqual(t.bom.map(x => x.id), ['1', '2', '3']);   // 表3 不再按表1 筛选，C 无表6维护行也保留
+  assert.deepEqual([r.before.bom, r.after.bom], [3, 3]);
   // 空 make_dept 的编码被理解为「未知部门」，照常参与跨产业计算
   const e = new C.Engine(s);
   assert.equal(e.dept('B'), '未知部门');
-  assert.equal(e.dept('C'), undefined);   // 不在表6的编码仍无部门
+  assert.equal(e.dept('C'), '未知部门');   // 无表6维护行的编码也统一按未知部门
   assert.equal(e.sameIndustry('B', 'B'), true);
   assert.equal(e.sameIndustry('A', 'B'), false);   // 甲部门 ≠ 未知部门 → 跨产业
 });

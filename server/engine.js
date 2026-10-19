@@ -37,12 +37,16 @@ class Engine extends C.Engine {
       const supplyKnown = source === 'mo' ? this.t.mo.length > 0 : net.known;
       numeric[i * 2 + 1] = Number(supplyKnown && !unknown[i]);
       // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项
+      // 当月无预测记录的编码为透传节点：取其上层累计需求继续上溯，不再传 0 或提前断链
       const noParents = !this.graph.parents.get(code).length;
       for (const edge of this.graph.children.get(code)) {
         const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
         const originate = mode === 'direct' || crossEdge || noParents;
-        const outgoing = originate ? Math.abs(net.demand || 0) : numeric[i * 2];
-        const known = crossEdge ? net.known && this.dept(code) != null && this.dept(edge.child) != null : originate ? net.known : !unknown[i];
+        const hasOwn = net.known;
+        const outgoing = originate && hasOwn ? Math.abs(net.demand || 0) : numeric[i * 2];
+        const known = hasOwn
+          ? (crossEdge ? this.dept(code) != null && this.dept(edge.child) != null : originate ? true : !unknown[i])
+          : (noParents ? false : !unknown[i]);
         const j = this.orderIndex.get(edge.child), value = numeric[j * 2] + outgoing * edge.qty;
         if (!Number.isFinite(value)) throw Error('BOM累计需求超出计算范围');
         numeric[j * 2] = value;
@@ -61,18 +65,32 @@ class Engine extends C.Engine {
     const moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
     const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: C.siteSummary(moRows) } : net;
     const complete = !!numeric[index * 2 + 1], knownDemand = numeric[index * 2];
+    const noParents = !this.graph.parents.get(code).length, demandKnown = noParents ? net.known : (net.known || knownDemand > 0), passThrough = !net.known && !noParents && knownDemand > 0;
     const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
     const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
     if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, C.siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
     const attr = this.attributes.get(code) || {}, risks = [];
-    if (!complete) risks.push('预测或产业数据不完整');
+    if (!complete && !passThrough) risks.push('预测或产业数据不完整');
     if (gap > C.EPS) risks.push('预测总量不足');
     if (own.sites.single) risks.push('当月单一加工地');
     if (own.sites.count > 1 && own.sites.maxShare >= this.cfg.concentration) risks.push('加工地高度集中');
     if (own.sites.unassigned > C.EPS) risks.push('加工地未完整分配');
     if (attr.lead_cv != null && attr.lead_cv >= this.cfg.cv_threshold) risks.push('加工周期波动');
     if (attr.lead_mean == null) risks.push('加工周期未维护');
-    return { code, attr, ...own, complete, demand, knownDemand, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites: this.periodSiteCache.get(code), risks };
+    return { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites: this.periodSiteCache.get(code), risks };
+  }
+  // 单条 parent→child 边的有效需求：与 matrix 的传导规则完全一致。
+  // 有预测记录时按原口径取 parent 自身需求；无预测记录时取 parent 的上层累计需求（透传上溯）。
+  edgeDemand(parent, child, month, mode = 'cross') {
+    const net = this.net(parent, month);
+    const crossEdge = mode === 'cross' && !this.sameIndustry(parent, child);
+    const noParents = !this.graph.parents.get(parent).length;
+    const originate = mode === 'direct' || crossEdge || noParents;
+    if (originate && net.known) return { value: Math.abs(net.demand || 0), known: true };
+    const computed = this.compute(month, mode).get(parent), value = computed ? computed.knownDemand : 0;
+    // 版本覆盖该月但编码当月无预测记录时按 0 计入；仅当编码在本版本完全无预测记录且上游也无预测时才为未知
+    const zeroFill = (this.byCode.get(parent) || []).length > 0;
+    return { value, known: zeroFill || !!(computed && computed.demandKnown) };
   }
   balance(code, month, mode = 'cross', source = 'forecast') {
     const key = JSON.stringify([month, mode, source]), cached = this.monthCache.get(key)?.get(code);

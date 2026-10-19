@@ -727,6 +727,7 @@
       const size = n.code === this.selected ? 22 : 17;
       const style = { size, fill, stroke, lineWidth };
       if (n.multiLevel) { style.lineDash = [3, 2]; if (stroke === 'rgba(11,18,34,.9)') stroke = '#c9a25e'; style.stroke = stroke; }
+      if (n.passThrough) { style.lineDash = [3, 2]; if (stroke === 'rgba(11,18,34,.9)') stroke = '#8c99a8'; style.stroke = stroke; }   // 透传节点：无预测记录，虚线灰边
       // 标签分级：只有关键编码才带标签
       style.labelText = this._isKeyNode(n) ? String(n.code) : '';
       return style;
@@ -742,7 +743,7 @@
       const s = n.sites && n.sites[0] && (n.sites[0].key || n.sites[0].name);
       return s ? hashColor(String(s)) : '#9aa7b6';
     }
-    _isKeyNode(n) { return n.code === this.selected || n.code === this.chainCode || !!n.multiLevel || (n.gap || 0) > 1e-8 || !!n.single; }
+    _isKeyNode(n) { return n.code === this.selected || n.code === this.chainCode || !!n.multiLevel || !!n.passThrough || (n.gap || 0) > 1e-8 || !!n.single; }
 
     _edgeStyle(e, level) {
       let stroke = '#4d6c8c', width = 1.1;

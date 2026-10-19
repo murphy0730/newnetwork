@@ -22,7 +22,7 @@ test('insights give reconciled evidence, actionable simulation and explicit shar
 test('missing data, terminal codes and inventory coverage are never described as confirmed delivery', () => {
   const data = C.sample(); data.tables.inventory = []; data.tables.attributes = data.tables.attributes.filter(r => r.code !== 'A'); data.tables.forecast = data.tables.forecast.filter(r => r.code !== 'A');
   const s = setup(data); try {
-    const e = s.engine(), a = s.insights({ code: 'A', month: e.months[0] }, 'test'); assert.equal(a.confidence.supplyComplete, false); assert.ok(a.facts.some(f => f.id === 'supply_unknown')); assert.ok(!a.actions.some(f => f.id === 'test_supply_increase')); assert.ok(!a.facts.some(f => f.id === 'supply_covered'));
+    const e = s.engine(), a = s.insights({ code: 'A', month: e.months[0] }, 'test'); assert.equal(a.confidence.supplyComplete, false); assert.ok(a.facts.some(f => f.id === 'supply_passthrough')); assert.ok(!a.actions.some(f => f.id === 'test_supply_increase')); assert.ok(!a.facts.some(f => f.id === 'supply_covered'));
     const top = e.graph.codes.find(c => !e.graph.parents.get(c).length), result = s.insights({ code: top, month: e.months[0] }, 'test'); assert.ok(result.facts.some(f => f.id === 'supply_not_applicable')); assert.ok(result.dependencies.incompleteCount > 0); assert.equal(result.confidence.inventoryKnown, false);
     assert.throws(() => s.insights({ code: top, span: 'NaN' }, 'test'), /窗口/);
   } finally { s.store.close(); }

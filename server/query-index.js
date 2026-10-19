@@ -6,7 +6,7 @@ const compare = (a, b) => Number(b.complete) - Number(a.complete) || (b.gap ?? -
 function lru(map, key, value, limit) { if (map.has(key)) map.delete(key); map.set(key, value); if (map.size > limit) map.delete(map.keys().next().value); return value; }
 function summarize(rows, engine) {
   const dashboard = { total: rows.length, shortage: 0, coverageShortage: 0, single: 0, concentrated: 0, incomplete: 0, unknownSites: 0 };
-  for (const r of rows) { dashboard.shortage += Number(r.gap > C.EPS); dashboard.coverageShortage += Number(r.coverageGap > C.EPS); dashboard.single += Number(r.sites.single); dashboard.concentrated += Number(r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration); dashboard.incomplete += Number(!r.complete); dashboard.unknownSites += Number(r.sites.unassigned > C.EPS); }
+  for (const r of rows) { dashboard.shortage += Number(r.gap > C.EPS); dashboard.coverageShortage += Number(r.coverageGap > C.EPS); dashboard.single += Number(r.sites.single); dashboard.concentrated += Number(r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration); dashboard.incomplete += Number(!r.complete && !r.passThrough); dashboard.unknownSites += Number(r.sites.unassigned > C.EPS); }
   return dashboard;
 }
 function view(engine, month, mode, source) {
@@ -32,7 +32,7 @@ function filter(view, q, engine, input = view.rows) {
   const key = JSON.stringify([search, sites, codes, q.industry || '', q.category || '', q.risk || '']);
   if (!search && !sites.length && !codes.length && !q.industry && !q.category && !q.risk) return input;
   if (input === view.rows && view.filters.has(key)) return lru(view.filters, key, view.filters.get(key), 4);
-  const rows = input.filter(r => ((!search && !codes.length) || codeSet.has(r.code) || (search && [r.code, r.attr.name, r.attr.make_dept].some(v => String(v || '').toLowerCase().includes(search)))) && (!sites.length || r.sites.sites.some(s => siteSet.has(s.key))) && (!q.industry || (r.attr.make_dept || '未知部门') === q.industry) && (!q.category || r.attr.part_category === q.category) && (!q.risk || (q.risk === 'shortage' ? r.gap > C.EPS : q.risk === 'coverage' ? r.coverageGap > C.EPS : q.risk === 'single' ? r.sites.single : q.risk === 'concentrated' ? r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration : q.risk === 'incomplete' ? !r.complete : r.risks.length > 0)));
+  const rows = input.filter(r => ((!search && !codes.length) || codeSet.has(r.code) || (search && [r.code, r.attr.name, r.attr.make_dept].some(v => String(v || '').toLowerCase().includes(search)))) && (!sites.length || r.sites.sites.some(s => siteSet.has(s.key))) && (!q.industry || (r.attr.make_dept || '未知部门') === q.industry) && (!q.category || r.attr.part_category === q.category) && (!q.risk || (q.risk === 'shortage' ? r.gap > C.EPS : q.risk === 'coverage' ? r.coverageGap > C.EPS : q.risk === 'single' ? r.sites.single : q.risk === 'concentrated' ? r.sites.count > 1 && r.sites.maxShare >= engine.cfg.concentration : q.risk === 'incomplete' ? !r.complete && !r.passThrough : r.risks.length > 0)));
   return input === view.rows ? lru(view.filters, key, rows, 4) : rows;
 }
 function dependencies(engine, root, month, mode, source) {

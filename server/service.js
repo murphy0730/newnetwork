@@ -206,13 +206,13 @@ class Service {
     for (let i = 0; i < rows.length; i++) { const x = rows[i]; if (water == null || !x.complete) { water = null; continue; } water += x.supply - x.demand - (x.remove || 0); if (water < -C.EPS && !firstShortage) firstShortage = spanMonths[i]; }
     return { ...base, complete, supply, demand, raw, add, remove, gap: complete && engine.graph.parents.get(r.code).length ? demand + remove - supply : null, inventory, coverageGap: complete && inventory != null ? demand + remove - supply - inventory : null, firstShortage, risks: [...new Set(rows.flatMap(x => x.risks))], monthly: rows.map((x, i) => ({ month: spanMonths[i], raw: x.raw ?? 0, add: x.add ?? 0, remove: x.remove ?? 0, supply: x.supply, demand: x.demand, gap: x.gap, complete: x.complete })) };
   }
-  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '未知部门', category: r.attr.part_category || '', raw: r.raw ?? 0, add: r.add ?? 0, remove: r.remove ?? 0, supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
+  compact(r) { return { code: r.code, name: r.attr.name || '', make_dept: r.attr.make_dept || '未知部门', category: r.attr.part_category || '', raw: r.raw ?? 0, add: r.add ?? 0, remove: r.remove ?? 0, supply: r.supply, demand: r.demand, gap: r.gap, inventory: r.inventory, coverageGap: r.coverageGap, complete: r.complete, passThrough: r.passThrough, siteCount: r.sites.count, single: r.sites.single, siteComplete: r.sites.complete, sites: r.sites.sites, maxShare: r.sites.maxShare, unassigned: r.sites.unassigned, periodSingle: r.periodSites.single, risks: r.risks, lead_mean: r.attr.lead_mean ?? null, lead_cv: r.attr.lead_cv ?? null, contribution: r.contribution, coeff: r.coeff }; }
   insights(q, actor) { return require('./insights')(this, q, actor); }
   prepareSimulation(q, actor) { const { engine, trace } = this.context(q, actor); return { ready: true, trace, codes: engine.graph.codes.length, note: '推演线程已装载该基线；后续模拟仍为独立情景，不修改基线。' }; }
   detail(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), code = q.code;
     if (!e.orderIndex.has(code)) throw error('编码不存在', 404);
-    const row = e.row(code, month, mode, source), targets = e.relations(code, mode).map(r => { const net = e.net(r.code, month); return { ...r, forecast: net.raw, remove: net.remove, known: net.known, demand: net.demand == null ? null : Math.abs(net.demand) * r.coeff, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
+    const row = e.row(code, month, mode, source), targets = e.relations(code, mode).map(r => { const net = e.net(r.code, month), out = e.edgeDemand(r.code, code, month, mode); return { ...r, forecast: net.raw, remove: net.remove, known: out.known, demand: out.known ? out.value * r.coeff : null, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
     const paths = e.paths(code, month, mode, source), details = e.months.map(m => { const r = e.row(code, m, mode, source); return { month: m, raw: r.raw, add: r.add, remove: r.remove, ...this.compact(r) }; });
     return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, source: r._source })) };
   }
@@ -265,7 +265,7 @@ class Service {
       coverageShortage: rows.filter(r => (r.coverageGap || 0) > C.EPS).length,
       single: rows.filter(r => r.sites.single).length,
       concentrated: rows.filter(r => r.risks.includes('加工地高度集中')).length,
-      incomplete: rows.filter(r => !r.complete).length,
+      incomplete: rows.filter(r => !r.complete && !r.passThrough).length,
       singleShortage: rows.filter(r => r.sites.single && r.gap > C.EPS).length
     };
     const depts = new Map();
