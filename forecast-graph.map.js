@@ -320,6 +320,8 @@
       this.selected = '';
       this.edgeOpacity = 0.8;
       this.showRatio = false;
+      this.edgeDirection = 'top-down';   // top-down 顶层→底层 | bottom-up 底层→顶层（仅视觉方向）
+      this.ratioStyle = 'times';         // times ×N | ratio 1:N
       this.chainCode = '';
       this.ready = false;
       this.graph = null;
@@ -523,9 +525,11 @@
         }
       });
       const flows = aggregateFlows(this.edges, c => this._blockKeyOf(c), { perSource: FLOWS_PER_SOURCE, max: MAX_FLOWS });
+      const rev = this.edgeDirection === 'bottom-up';
       const edges = flows.map((f, i) => ({
         id: '__f' + i, type: 'quadratic',
-        source: this._blkIds.get(f.s), target: this._blkIds.get(f.t),
+        source: rev ? this._blkIds.get(f.t) : this._blkIds.get(f.s),
+        target: rev ? this._blkIds.get(f.s) : this._blkIds.get(f.t),
         data: { __flow: true, count: f.count, critical: f.critical, risk: f.risk, riskCount: f.riskCount },
         style: this._flowStyle(f, 18)
       })).filter(e => e.source && e.target);
@@ -612,10 +616,11 @@
         // 流：焦点块内按层聚合，焦点块与其他块之间按块聚合到色块
         const keyOf = code => { const n = this._nodeMap.get(code); if (!n) return null; const bk = this._blockKey(n); return bk === focusKey ? bk + '\u0000' + this._levelOf(n) : bk; };
         const flows = aggregateFlows(this.edges, keyOf, { perSource: 2, max: MAX_FLOWS });
+        const rev = this.edgeDirection === 'bottom-up';
         const edges = flows.map((f, i) => ({
           id: '__f' + i, type: 'quadratic',
-          source: this._subIds.get(f.s) || this._ctxIds.get(f.s),
-          target: this._subIds.get(f.t) || this._ctxIds.get(f.t),
+          source: rev ? (this._subIds.get(f.t) || this._ctxIds.get(f.t)) : (this._subIds.get(f.s) || this._ctxIds.get(f.s)),
+          target: rev ? (this._subIds.get(f.s) || this._ctxIds.get(f.s)) : (this._subIds.get(f.t) || this._ctxIds.get(f.t)),
           data: { __flow: true, count: f.count, critical: f.critical, risk: f.risk, riskCount: f.riskCount },
           style: this._flowStyle(f, 16)
         })).filter(e => e.source && e.target);
@@ -707,8 +712,8 @@
       this._renderedEdgeIdx = edgeIdx;
       this._renderedCodes = picked.map(n => n.code);
       const edges = edgeIdx.map(i => {
-        const e = this.edges[i];
-        return { id: '__e' + i, source: e.source, target: e.target, data: { ...e }, style: this._edgeStyle(e, 'C') };
+        const e = this.edges[i], rev = this.edgeDirection === 'bottom-up';
+        return { id: '__e' + i, source: rev ? e.target : e.source, target: rev ? e.source : e.target, data: { ...e }, style: this._edgeStyle(e, 'C') };
       });
       this._rendered = { level: 'C', units: picked.length, flows: edges.length, focusKey: showAll ? null : focusKey, focusLevel: focusLevel != null ? Number(focusLevel) : null, members: members.length, dropped: members.length - picked.length, levels: levels.length, totalCodes: this.nodes.length, totalEdges: this.edges.length };
       return { nodes, edges, combos: [] };
@@ -751,7 +756,7 @@
       else if (e.risk) { stroke = FLOW.risk; width = 2; }
       const dashed = e.kind && (e.kind.includes('跨产业') || e.kind === 'BOM');
       const style = { stroke, lineWidth: width, opacity: Math.min(0.75, this.edgeOpacity * 0.7), lineDash: dashed ? [4, 3] : undefined, endArrow: true };
-      if (this.showRatio && e.qty != null) style.labelText = '×' + (Math.round(e.qty * 100) / 100);
+      if (this.showRatio && e.qty != null) style.labelText = this.ratioStyle === 'ratio' ? '1:' + (Math.round(e.qty * 100) / 100) : '×' + (Math.round(e.qty * 100) / 100);
       return style;
     }
 
@@ -770,7 +775,10 @@
       });
       this._renderedCodes = nodes.map(n => n.id);
       this._renderedEdgeIdx = this.edges.map((e, i) => i);
-      const edges = this.edges.map((e, i) => ({ id: '__e' + i, source: e.source, target: e.target, data: { ...e }, style: this._edgeStyle(e, 'C') }));
+      const edges = this.edges.map((e, i) => {
+        const rev = this.edgeDirection === 'bottom-up';
+        return { id: '__e' + i, source: rev ? e.target : e.source, target: rev ? e.source : e.target, data: { ...e }, style: this._edgeStyle(e, 'C') };
+      });
       this._rendered = { level: 'force', units: nodes.length, flows: edges.length, totalCodes: this.nodes.length, totalEdges: this.edges.length };
       return { nodes, edges, combos: [...groups.entries()].map(([key, g]) => ({ id: g.id, data: { key, count: g.count }, style: { labelText: key + ' · ' + g.count, fill: hashColor(key), stroke: hashColor(key) } })) };
     }
@@ -1175,7 +1183,7 @@
       this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
         if (!this.graph) return;
         if (nodes) this.graph.updateNodeData((this._renderedCodes || []).map(code => { const n = this._node(code); return n ? { id: code, style: { ...this._nodeStyle(n, 'C'), x: undefined, y: undefined } } : null; }).filter(Boolean));
-        else this.graph.updateEdgeData((this._renderedEdgeIdx || []).map(i => ({ id: '__e' + i, style: { ...this._edgeStyle(this.edges[i], 'C'), labelText: this.showRatio && this.edges[i].qty != null ? '×' + (Math.round(this.edges[i].qty * 100) / 100) : '' } })));
+        else this.graph.updateEdgeData((this._renderedEdgeIdx || []).map(i => ({ id: '__e' + i, style: this._edgeStyle(this.edges[i], 'C') })));
         await this.graph.draw();
         if (states) await this._applyStates();
       });
@@ -1185,6 +1193,8 @@
     setHighlight(kind) { this.highlight = kind; return this._usePreset() && this._level === 'C' ? this._applyStates().then(() => this.render()) : this.render(); }
     setEdgeOpacity(v) { this.edgeOpacity = Math.min(1, Math.max(0.05, Number(v) || 0.8)); return this.render(); }
     setShowRatio(v) { this.showRatio = !!v; return this.render(); }
+    setEdgeDirection(v) { this.edgeDirection = v === 'bottom-up' ? 'bottom-up' : 'top-down'; return this.render(); }
+    setRatioStyle(v) { this.ratioStyle = v === 'ratio' ? 'ratio' : 'times'; return this.render(); }
     select(code) { this.selected = code; return this.render(); }
     // 编程式复现单击节点的效果：锁定该编码并高亮整条关联链路（汇总表跳转联动用）。
     // 选中节点属于关键节点（_isKeyNode 含 chainCode），会被保留在裁剪集内。

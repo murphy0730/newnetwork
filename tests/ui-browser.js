@@ -226,6 +226,14 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await js('window.__testGraph._renderQueue');
   const ratioLabel = await js("window.__testGraph.graph.getElementRenderStyle('__e0').labelText");
   assert.ok(typeof ratioLabel === 'string' && ratioLabel.startsWith('×')); checks.push('edge ratio labels when enabled (' + ratioLabel + ')');
+  // 配比格式可切换为 1:N；箭头方向可切换为底层→顶层
+  await js("document.querySelector('#gs-ratio-style [data-ratio-style=\"ratio\"]').click()"); await js('window.__testGraph._renderQueue');
+  const ratioLabel2 = await js("window.__testGraph.graph.getElementRenderStyle('__e0').labelText");
+  assert.ok(typeof ratioLabel2 === 'string' && ratioLabel2.startsWith('1:')); checks.push('ratio style 1:N configurable (' + ratioLabel2 + ')');
+  await js("document.querySelector('#gs-direction [data-dir=\"bottom-up\"]').click()"); await js('window.__testGraph._renderQueue');
+  const reversed = await js("(()=>{const g=window.__testGraph;const e=g.graph.getEdgeData().find(x=>x.id==='__e0');const orig=g.edges[0];return {source:e.source,target:e.target,expectSource:orig.target,expectTarget:orig.source};})()");
+  assert.equal(reversed.source, reversed.expectSource); assert.equal(reversed.target, reversed.expectTarget); checks.push('arrow direction bottom-up reverses rendered edges');
+  await js("document.querySelector('#gs-direction [data-dir=\"top-down\"]').click()"); await js('window.__testGraph._renderQueue');
 
   // 10. 展开深度设置按钮
   await js("document.querySelector('#gs-depth [data-depth=\"5\"]').click()");

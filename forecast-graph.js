@@ -102,6 +102,8 @@
       this.selected = '';
       this.edgeOpacity = 0.8;        // 连线透明度，设置面板可调
       this.showRatio = false;        // 边上是否展示配比关系（×数量）
+      this.edgeDirection = 'top-down'; // top-down 顶层→底层 | bottom-up 底层→顶层（仅视觉方向）
+      this.ratioStyle = 'times';       // times ×N | ratio 1:N
       this.chainCode = '';           // 单击选中的链路中心节点
       this.ready = false;
       this.graph = null;
@@ -332,7 +334,7 @@
       else if (this.highlight === 'risk' && e.risk) { stroke = '#fbbf24'; width = 3; }
       const dashed = e.kind && (e.kind.includes('跨产业') || e.kind === 'BOM');
       const style = { stroke, lineWidth: width, opacity: this.edgeOpacity, lineDash: dashed ? [4, 3] : undefined, endArrow: true };
-      if (this.showRatio && e.qty != null) style.labelText = '×' + (Math.round(e.qty * 100) / 100);
+      if (this.showRatio && e.qty != null) style.labelText = this.ratioStyle === 'ratio' ? '1:' + (Math.round(e.qty * 100) / 100) : '×' + (Math.round(e.qty * 100) / 100);
       return style;
     }
 
@@ -357,7 +359,10 @@
         if (preset) { style.x = preset[0]; style.y = preset[1]; }
         return { id: n.code, data: { ...n, ...(preset ? { x: preset[0], y: preset[1] } : {}) }, style, ...(combo ? { combo } : {}) };
       });
-      const edges = this.edges.map((e, i) => ({ id: '__e' + i, source: e.source, target: e.target, data: { ...e }, style: this._edgeStyle(e) }));
+      const edges = this.edges.map((e, i) => {
+        const rev = this.edgeDirection === 'bottom-up';
+        return { id: '__e' + i, source: rev ? e.target : e.source, target: rev ? e.source : e.target, data: { ...e }, style: this._edgeStyle(e) };
+      });
       const combos = [...groups.entries()].map(([key, g]) => ({ id: g.id, data: { key, count: g.count }, style: { labelText: `${g.label} · ${g.count}`, fill: hashColor(String(key)), stroke: hashColor(String(key)) } }));
       return { nodes, edges, combos };
     }
@@ -468,7 +473,7 @@
       this._renderQueue = this._renderQueue.catch(() => {}).then(async () => {
         if (!this.graph) return;
         if (nodes) this.graph.updateNodeData(this.nodes.map(n => ({ id: n.code, style: this._nodeStyle(n) })));
-        else this.graph.updateEdgeData(this.edges.map((e, i) => ({ id: '__e' + i, style: { ...this._edgeStyle(e), labelText: this.showRatio && e.qty != null ? '×' + (Math.round(e.qty * 100) / 100) : '' } })));
+        else this.graph.updateEdgeData(this.edges.map((e, i) => ({ id: '__e' + i, style: this._edgeStyle(e) })));
         await this.graph.draw();
         if (this.graph && states) await this._applyStates();
       });
@@ -478,6 +483,8 @@
     setHighlight(kind) { this.highlight = kind; return this.restyle(false, true); }
     setEdgeOpacity(v) { this.edgeOpacity = Math.min(1, Math.max(0.05, Number(v) || 0.8)); return this.restyle(); }
     setShowRatio(v) { this.showRatio = !!v; return this.restyle(); }
+    setEdgeDirection(v) { this.edgeDirection = v === 'bottom-up' ? 'bottom-up' : 'top-down'; return this.render(); }
+    setRatioStyle(v) { this.ratioStyle = v === 'ratio' ? 'ratio' : 'times'; return this.restyle(); }
     select(code) { this.selected = code; return this.render(); }
     // 编程式复现单击节点的效果：锁定该编码并高亮整条关联链路（汇总表跳转联动用）。
     selectChain(code) {
