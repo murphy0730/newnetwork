@@ -77,15 +77,16 @@ function view(engine, month, mode, source) {
 }
 
 // Relations are materialized only for the requested page, never an all-pairs BOM closure.
-function relations(engine, code, mode) {
-  if (mode !== 'cross') return engine.relations(code, mode);
+function relations(engine, code, mode, month) {
+  const result = engine.relations(code, mode, month, true);   // 无预测记录的中间节点不停止，继续上溯
+  if (mode !== 'cross') return result;
   // Reuse the graph/insights frontier, stopping at the first different make_dept.
   // A same-industry root is not a cross-industry demand source for this table.
-  return engine.relations(code, mode).filter(link => link.kind !== '本产业最顶层');
+  return result.filter(link => link.kind !== '本产业最顶层');
 }
 
 function decorate(engine, base, month, span, months, mode, source, periodMode = 'individual') {
-  const links = relations(engine, base.code, mode);
+  const links = relations(engine, base.code, mode, month);
   const monthSet = new Set(engine.months);
   // 预测版本覆盖该月、但编码当月无预测记录时按0计入（供应添加/使用剔除仍生效）；版本未覆盖的月份保持数据不完整
   const targets = links.map(link => ({ ...link, make_dept: engine.dept(link.code) || '',

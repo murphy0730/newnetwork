@@ -261,19 +261,24 @@
       const result = { raw, known, supply: known ? raw + adj.add : null, demand: known ? raw - adj.remove : null, ...adj, sites: siteSummary(rows, adj.add) };
       cache.set(code, result); return result;
     }
-    relations(code, mode) {
-      const key = JSON.stringify([code, mode]); if (this.relationCache.has(key)) return this.relationCache.get(key);
+    // 需求来源上溯：mode 决定边界规则；传 month 且 skipNoForecast 时，无预测记录的中间节点不停止，
+    // 沿 BOM 继续向上找有预测记录的上层（与 matrix/edgeDemand 的数值上溯保持一致）
+    relations(code, mode, month, skipNoForecast = false) {
+      const key = JSON.stringify([code, mode, month || '', skipNoForecast]); if (this.relationCache.has(key)) return this.relationCache.get(key);
       const amounts = new Map([[code, 1]]), targets = new Map(), reachable = new Set([code]), queue = [code];
+      const parentsOf = c => this.graph.parents.get(c) || [];
+      const isTarget = (c, parents) => c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)));
+      const skip = c => skipNoForecast && month && !this.net(c, month).known && parentsOf(c).length > 0;
       for (let i = 0; i < queue.length; i++) {
-        const c = queue[i], parents = this.graph.parents.get(c) || [];
-        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)))) continue;
+        const c = queue[i], parents = parentsOf(c);
+        if (isTarget(c, parents) && !skip(c)) continue;
         for (const r of parents) if (!reachable.has(r.parent)) { reachable.add(r.parent); queue.push(r.parent); }
       }
       // Reverse topological propagation sums converging path coefficients without enumerating paths.
       for (const c of [...reachable].sort((a, b) => this.orderIndex.get(b) - this.orderIndex.get(a))) {
         if (!amounts.has(c)) continue;
-        const parents = this.graph.parents.get(c);
-        if (c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)))) {
+        const parents = parentsOf(c);
+        if (isTarget(c, parents) && !skip(c)) {
           const qty = amounts.get(c); if (!Number.isFinite(qty)) throw Error('BOM累计用量超出计算范围');
           const kind = mode === 'cross' ? (this.dept(c) == null || this.dept(code) == null) ? '产业未确认' : this.sameIndustry(c, code) ? '本产业最顶层' : '跨产业首个编码' : mode === 'top' ? '最顶层' : '直接父项';
           targets.set(c, { code: c, coeff: qty, kind }); continue;

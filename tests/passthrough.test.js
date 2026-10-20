@@ -77,14 +77,53 @@ test('无表6维护行的透传编码统一按未知部门参与计算', () => {
   assert.equal(c.demand, 100); assert.equal(c.complete, true);
 });
 
+test('情况1：B 有维护但无预测 → C 跨产业找到 A 而不是 B（targets 与数值一致）', () => {
+  // C 属产业1，B/A 属产业2；A=100，C=50，B 无预测
+  const s = chain({ aDept: '产业2', bDept: '产业2', cDept: '产业1', bQty: null });
+  const e = new C.Engine(s);
+  const c = e.compute(MONTH, 'cross').get('C');
+  assert.equal(c.demand, 100); assert.equal(c.gap, 50); assert.equal(c.complete, true);
+  const cross = e.relations('C', 'cross', MONTH, true);
+  assert.deepEqual(cross.map(r => [r.code, r.kind]), [['A', '跨产业首个编码']]);   // 不是停在 B
+  assert.deepEqual(e.relations('C', 'direct', MONTH, true).map(r => r.code), ['A']);   // 直接父子同样上溯到 A
+  const b = e.compute(MONTH, 'cross').get('B');
+  assert.equal(b.passThrough, true); assert.equal(b.gap, null);
+});
+
+test('情况2：B 完全不在表6 → 未知部门 + 无预测，同样继续上溯到 A；B 有预测时停在 B', () => {
+  const s = chain({ aDept: '产业2', cDept: '产业1', bAttr: false, bQty: null });
+  const e = new C.Engine(s);
+  assert.equal(e.dept('B'), '未知部门');
+  const c = e.compute(MONTH, 'cross').get('C');
+  assert.equal(c.demand, 100); assert.equal(c.complete, true);
+  assert.deepEqual(e.relations('C', 'cross', MONTH, true).map(r => [r.code, r.kind]), [['A', '跨产业首个编码']]);
+  // B 有预测 80：跨产业边界停在 B（B 是未知部门 ≠ 产业1）
+  const withB = new C.Engine(chain({ aDept: '产业2', cDept: '产业1', bAttr: false, bQty: 80 }));
+  const cw = withB.compute(MONTH, 'cross').get('C');
+  assert.equal(cw.demand, 80); assert.equal(cw.gap, 30);
+  assert.deepEqual(withB.relations('C', 'cross', MONTH, true).map(r => [r.code, r.kind]), [['B', '跨产业首个编码']]);
+});
+
+test('多层连续无预测：B1、B2 都无预测时一直上溯到 A', () => {
+  const s = C.empty(), t = s.tables;
+  for (const [code, dept] of [['A', 'X'], ['B1', 'X'], ['B2', 'X'], ['C', 'X']]) t.attributes.push({ code, make_dept: dept, lead_mean: 1 });
+  t.bom.push({ id: '1', parent: 'A', child: 'B1', qty: 1 }, { id: '2', parent: 'B1', child: 'B2', qty: 1 }, { id: '3', parent: 'B2', child: 'C', qty: 1 });
+  t.forecast.push({ plan_date: VERSION, code: 'A', month: MONTH, qty: 100, site_code: 'S' }, { plan_date: VERSION, code: 'C', month: MONTH, qty: 50, site_code: 'S' });
+  const e = new C.Engine(s), c = e.compute(MONTH, 'direct').get('C');
+  assert.equal(c.demand, 100); assert.equal(c.gap, 50); assert.equal(c.complete, true);
+  assert.deepEqual(e.relations('C', 'direct', MONTH, true).map(r => r.code), ['A']);
+  assert.equal(e.compute(MONTH, 'direct').get('B1').passThrough, true);
+  assert.equal(e.compute(MONTH, 'direct').get('B2').passThrough, true);
+});
+
 test('详情与汇总表 targets 也取上溯后的有效需求，与矩阵一致', () => {
   const service = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-passthrough-')), 't.sqlite'));
   try {
     service.publish(chain({ bQty: null }), 0, 'test', 'test');
     const detail = service.detail({ code: 'C', month: MONTH, mode: 'direct' }, 'test');
     assert.equal(detail.targets.length, 1);
-    assert.equal(detail.targets[0].code, 'B');
-    assert.equal(detail.targets[0].demand, 100);   // B 自身无预测，target 取 A 的预测
+    assert.equal(detail.targets[0].code, 'A');   // B 无预测，直接父子上溯到 A
+    assert.equal(detail.targets[0].demand, 100);
     assert.equal(detail.targets[0].known, true);
     const row = service.list({ summary: 1, role: 'supply', code: 'C', month: MONTH, mode: 'direct', span: 1, limit: 20 }, 'test').rows[0];
     assert.equal(row.demand, 100); assert.equal(row.gap, 50); assert.equal(row.complete, true);
