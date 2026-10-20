@@ -116,6 +116,26 @@ test('多层连续无预测：B1、B2 都无预测时一直上溯到 A', () => {
   assert.equal(e.compute(MONTH, 'direct').get('B2').passThrough, true);
 });
 
+test('聚焦编码只保留有向上下游闭包，兄弟/堂兄弟不进图', () => {
+  const service = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-focus-')), 't.sqlite'));
+  try {
+    const s = C.empty(), t = s.tables;
+    // A → B → C，A → B2 → D：B2 是 B 的兄弟，D 是堂兄弟（无向 3 跳内但不在有向链路上）
+    for (const code of ['A', 'B', 'C', 'B2', 'D']) t.attributes.push({ code, make_dept: 'X', lead_mean: 1 });
+    t.bom.push({ id: '1', parent: 'A', child: 'B', qty: 1 }, { id: '2', parent: 'B', child: 'C', qty: 1 }, { id: '3', parent: 'A', child: 'B2', qty: 1 }, { id: '4', parent: 'B2', child: 'D', qty: 1 });
+    for (const code of ['A', 'B', 'C', 'B2', 'D']) t.forecast.push({ plan_date: VERSION, code, month: MONTH, qty: 10, site_code: 'S' });
+    service.publish(s, 0, 'test', 'test');
+    const g = service.graph({ code: 'B', month: MONTH, mode: 'direct', depth: 3 }, 'test');
+    const codes = g.nodes.map(n => n.code);
+    assert.ok(codes.includes('A') && codes.includes('B') && codes.includes('C'));
+    assert.ok(!codes.includes('B2'), '兄弟不应进图');
+    assert.ok(!codes.includes('D'), '堂兄弟不应进图');
+    // 直接下层（depth=1）结果与原来一致：上 1 + 下 1
+    const g1 = service.graph({ code: 'B', month: MONTH, mode: 'direct', depth: 1 }, 'test');
+    assert.deepEqual(g1.nodes.map(n => n.code).sort(), ['A', 'B', 'C']);
+  } finally { service.store.close(); }
+});
+
 test('详情与汇总表 targets 也取上溯后的有效需求，与矩阵一致', () => {
   const service = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-passthrough-')), 't.sqlite'));
   try {

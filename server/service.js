@@ -221,14 +221,19 @@ class Service {
     let visible, matches;
     if (q.code && !e.orderIndex.has(q.code)) throw error('编码不存在', 404);
     if (q.code) {
-      visible = new Set([q.code]); let queue = [q.code];
-      for (let d = 0; d < depth && queue.length; d++) {
-        const next = [];
-        for (const c of queue) for (const edge of [...e.graph.parents.get(c), ...e.graph.children.get(c)]) {
-          const id = edge.parent === c ? edge.child : edge.parent;
-          if (!visible.has(id)) { visible.add(id); next.push(id); }
+      // 聚焦编码：只保留「有向 上游闭包 ∪ 有向 下游闭包」，各自沿有向边最多 depth 层。
+      // 不做无向 N 跳扩散，否则兄弟/堂兄弟等不在有向链路上的编码会挤进画布。
+      visible = new Set([q.code]);
+      for (const direction of ['up', 'down']) {
+        let queue = [q.code];
+        for (let d = 0; d < depth && queue.length; d++) {
+          const next = [];
+          for (const c of queue) for (const edge of (direction === 'up' ? e.graph.parents : e.graph.children).get(c)) {
+            const id = direction === 'up' ? edge.parent : edge.child;
+            if (!visible.has(id)) { visible.add(id); next.push(id); }
+          }
+          queue = next;
         }
-        queue = next;
       }
       matches = new Set(visible);
     } else {
