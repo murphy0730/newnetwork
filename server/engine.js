@@ -36,17 +36,17 @@ class Engine extends C.Engine {
       const code = this.graph.order[i], net = this.net(code, month);
       const supplyKnown = source === 'mo' ? this.t.mo.length > 0 : net.known;
       numeric[i * 2 + 1] = Number(supplyKnown && !unknown[i]);
-      // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项
-      // 当月无预测记录的编码为透传节点：取其上层累计需求继续上溯，不再传 0 或提前断链
+      // 口径差异：跨产业/最顶层对无预测记录的上层继续上溯；直接父子永远停在直接父项，
+      // 父项无预测记录按 0 计（已知 0，不再标不完整、也不上溯）
       const noParents = !this.graph.parents.get(code).length;
       for (const edge of this.graph.children.get(code)) {
         const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
         const originate = mode === 'direct' || crossEdge || noParents;
         const hasOwn = net.known;
-        const outgoing = originate && hasOwn ? Math.abs(net.demand || 0) : numeric[i * 2];
+        const outgoing = originate && (hasOwn || mode === 'direct') ? Math.abs(net.demand || 0) : numeric[i * 2];
         const known = hasOwn
           ? (crossEdge ? this.dept(code) != null && this.dept(edge.child) != null : originate ? true : !unknown[i])
-          : (noParents ? false : !unknown[i]);
+          : (mode === 'direct' ? true : noParents ? false : !unknown[i]);
         const j = this.orderIndex.get(edge.child), value = numeric[j * 2] + outgoing * edge.qty;
         if (!Number.isFinite(value)) throw Error('BOM累计需求超出计算范围');
         numeric[j * 2] = value;
@@ -83,6 +83,7 @@ class Engine extends C.Engine {
   // 有预测记录时按原口径取 parent 自身需求；无预测记录时取 parent 的上层累计需求（透传上溯）。
   edgeDemand(parent, child, month, mode = 'cross') {
     const net = this.net(parent, month);
+    if (mode === 'direct') return { value: Math.abs(net.demand || 0), known: true };   // 直接父子永停父项；无预测按 0 计（已知）
     const crossEdge = mode === 'cross' && !this.sameIndustry(parent, child);
     const noParents = !this.graph.parents.get(parent).length;
     const originate = mode === 'direct' || crossEdge || noParents;

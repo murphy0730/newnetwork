@@ -268,7 +268,7 @@
       const amounts = new Map([[code, 1]]), targets = new Map(), reachable = new Set([code]), queue = [code];
       const parentsOf = c => this.graph.parents.get(c) || [];
       const isTarget = (c, parents) => c !== code && (mode === 'direct' || !parents.length || (mode === 'cross' && !this.sameIndustry(c, code)));
-      const skip = c => skipNoForecast && month && !this.net(c, month).known && parentsOf(c).length > 0;
+      const skip = c => skipNoForecast && month && mode !== 'direct' && !this.net(c, month).known && parentsOf(c).length > 0;   // 直接父子永停直接父项；跨产业/最顶层才跳过无预测中间层
       for (let i = 0; i < queue.length; i++) {
         const c = queue[i], parents = parentsOf(c);
         if (isTarget(c, parents) && !skip(c)) continue;
@@ -291,6 +291,7 @@
     // 有预测记录时按原口径取 parent 自身需求；无预测记录时取 parent 的上层累计需求（透传上溯）。
     edgeDemand(parent, child, month, mode = 'cross') {
       const net = this.net(parent, month);
+      if (mode === 'direct') return { value: Math.abs(net.demand || 0), known: true };   // 直接父子永停父项；无预测按 0 计（已知）
       const crossEdge = mode === 'cross' && !this.sameIndustry(parent, child);
       const noParents = !this.graph.parents.get(parent).length;
       const originate = mode === 'direct' || crossEdge || noParents;
@@ -326,18 +327,17 @@
         if (attr.lead_mean == null) risks.push('加工周期未维护');
         result.set(code, { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
         if (saved) continue;
-        // 跨产业边界按边判定：父项与子项 make_dept 不同即为跨产业，需求在该边止步于子项（子项仅下达自身预测）
-        // 剔除超过预测时净需求为负，负值视为父项的消耗缺口，按绝对值向子项传导需求（净需求本身保留符号用于展示）
-        // 当月无预测记录的编码为透传节点：取其上层累计需求继续上溯，不再传 0 或提前断链
+        // 口径差异：跨产业/最顶层对无预测记录的上层继续上溯；直接父子永远停在直接父项，
+        // 父项无预测记录按 0 计（已知 0，不再标不完整、也不上溯）
         const noParents = !this.graph.parents.get(code).length;
         for (const edge of this.graph.children.get(code)) {
           const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
           const originate = mode === 'direct' || crossEdge || noParents;
           const hasOwn = net.known;
-          const outgoing = originate && hasOwn ? Math.abs(net.demand || 0) : knownDemand;
+          const outgoing = originate && (hasOwn || mode === 'direct') ? Math.abs(net.demand || 0) : knownDemand;
           const outgoingKnown = hasOwn
             ? (crossEdge ? this.dept(code) != null && this.dept(edge.child) != null : originate ? true : incomingKnown.get(code) !== false)
-            : (noParents ? false : incomingKnown.get(code) !== false);
+            : (mode === 'direct' ? true : noParents ? false : incomingKnown.get(code) !== false);
           const val = (incoming.get(edge.child) || 0) + outgoing * edge.qty;
           if (!Number.isFinite(val)) throw Error('BOM累计需求超出计算范围'); incoming.set(edge.child, val);
           if (!outgoingKnown) incomingKnown.set(edge.child, false);
