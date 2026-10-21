@@ -6,22 +6,17 @@ data/*
 *.sqlite-wal
 
 # 测试相关
+# tests/ 下只跟踪「回归脚本与基准脚本」，其余（临时脚本、抓包草稿、单次排查脚本）默认忽略。
+# 白名单用通配而不是逐条枚举：新增 *-browser.js（浏览器回归）或 shot-*.js（截图/取样）
+# 会自动入库，避免再出现「脚本写了、git status 看不见」的盲区。
 test-output/
 tests/*
 !tests/*.test.js
 !tests/*-benchmark.js
 !tests/benchmark.js
+!tests/*-browser.js
 !tests/browser.js
-!tests/build-browser.js
-!tests/adjust-import-browser.js
-!tests/summary-period-browser.js
-!tests/ui-browser.js
-!tests/cluster-browser.js
-!tests/response-benchmark.js
-!tests/shot-hull.js
-!tests/shot-live.js
-!tests/shot-spacing.js
-!tests/shot-table.js
+!tests/shot-*.js
 *.log
 
 # 离线构建输入与运行产物
