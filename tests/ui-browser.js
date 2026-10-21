@@ -16,6 +16,10 @@ for (const code of ['ISOLATED-TEST-1', 'ISOLATED-TEST-2']) {
   fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code });
   fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code });
 }
+// 零预测编码：表1预测为 0 且带 BOM 连接（验证「显示预测值为 0 的编码」开关）
+fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code: 'ZERO-TEST-1', qty: 0 });
+fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code: 'ZERO-TEST-1' });
+fixtureData.tables.bom.push({ id: 'Z-1', parent: 'FG-01', child: 'ZERO-TEST-1', qty: 1 });
 const summaryMonth = fixtureData.tables.forecast[0].month;
 for (const [code, make_dept, qty] of [['SUM-A', 'a', 100], ['SUM-B1', 'a', 80], ['SUM-B2', 'a', 20], ['SUM-C', 'c', 650]]) {
   fixtureData.tables.attributes.push({ code, make_dept, lead_mean: 1 });
@@ -55,6 +59,13 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   await js("const box=document.getElementById('gs-hide-isolated');box.checked=false;box.dispatchEvent(new Event('change',{bubbles:true}))");
   await js('window.__testGraph._renderQueue');
   assert.ok(await js("window.__testGraph.nodes.some(n=>n.code==='ISOLATED-TEST-1')")); checks.push('setting restores isolated codes without another graph request');
+  // 零预测编码开关：默认显示，关闭后 ZERO-TEST-1（预测 0、带 BOM 连接）不进图，再开启恢复
+  await wait(() => js("window.__testGraph.nodes.some(n=>n.code==='ZERO-TEST-1')"), 'zero code visible');
+  await js("const z0=document.getElementById('gs-show-zero');z0.checked=false;z0.dispatchEvent(new Event('change',{bubbles:true}))");
+  await js('window.__testGraph._renderQueue');
+  assert.ok(await js("!window.__testGraph.nodes.some(n=>n.code==='ZERO-TEST-1')")); checks.push('zero-forecast codes hidden when toggled off');
+  await js("const z1=document.getElementById('gs-show-zero');z1.checked=true;z1.dispatchEvent(new Event('change',{bubbles:true}))"); await js('window.__testGraph._renderQueue');
+  assert.ok(await js("window.__testGraph.nodes.some(n=>n.code==='ZERO-TEST-1')")); checks.push('zero-forecast codes restored when toggled on');
   const total = await js('window.__testGraph.nodes.length');
   const N0 = await js('window.__testGraph.nodes[0].code');
 
