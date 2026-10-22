@@ -309,9 +309,15 @@
         const code = this.graph.order[index];
         const net = this.net(code, month), moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
         const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: siteSummary(moRows) } : net;
-        const complete = saved ? !!saved[index * 2 + 1] : own.supply != null && (incomingKnown.get(code) !== false);
+        const completeAll = saved ? !!saved[index * 2 + 1] : own.supply != null && (incomingKnown.get(code) !== false), knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0;
+        // 跨产业/最顶层允许「部分来源缺失」：仍有已知贡献时按已知部分计算，并打 partial 标记；全部未知仍为数据不完整。
+        // 透传节点（自身无预测记录）不参与部分计算，避免把供应未知误算成缺口
+        // 供应本身未知（如指令模式未导入表2，supply 为 null）时也不能按部分计算：否则 null 会被当成 0，凭空算出缺口
+        const passThroughCode = !net.known && this.graph.parents.get(code).length > 0 && knownDemand > 0;
+        const partial = mode !== 'direct' && !completeAll && own.supply != null && knownDemand > 0 && !passThroughCode;
+        const complete = completeAll || partial;
         // 缺口把自身使用剔除计入需求侧：缺口 = 上层需求 + 使用剔除 − 净供应（等价于剔除先扣减自身可用量）
-        const knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0, demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
+        const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
         if (!saved) { numeric[index * 2] = knownDemand; numeric[index * 2 + 1] = Number(complete); }
         const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
         if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
@@ -319,13 +325,14 @@
         const noParentsCode = !this.graph.parents.get(code).length, demandKnown = noParentsCode ? net.known : (net.known || knownDemand > 0), passThrough = !net.known && !noParentsCode && knownDemand > 0;
         const attr = this.attributes.get(code) || {}, risks = [];
         if (!complete && !passThrough) risks.push('预测或产业数据不完整');
+        if (partial) risks.push('部分来源数据缺失');
         if (gap > EPS) risks.push('预测总量不足');
         if (own.sites.single) risks.push('当月单一加工地');
         if (own.sites.count > 1 && own.sites.maxShare >= this.cfg.concentration) risks.push('加工地高度集中');
         if (own.sites.unassigned > EPS) risks.push('加工地未完整分配');
         if (attr.lead_cv != null && attr.lead_cv >= this.cfg.cv_threshold) risks.push('加工周期波动');
         if (attr.lead_mean == null) risks.push('加工周期未维护');
-        result.set(code, { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
+        result.set(code, { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, partial, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
         if (saved) continue;
         // 口径差异：跨产业/最顶层对无预测记录的上层继续上溯；直接父子永远停在直接父项，
         // 父项无预测记录按 0 计（已知 0，不再标不完整、也不上溯）

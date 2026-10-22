@@ -208,7 +208,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     if (state.code && state.view === 'graph') await renderDetail(id);
   }
   // 汇总表行状态：与洞察 status 同语义，从行数据推导
-  const rowStatus = r => r.passThrough ? ['透传', 'is-unknown'] : !r.complete ? ['数据不完整', 'is-unknown'] : (r.gap || 0) > C.EPS || (r.coverageGap || 0) > C.EPS ? ['存在风险', 'is-risk'] : r.risks.length ? ['需要关注', 'is-attention'] : ['未见缺口', 'is-ok'];
+  const rowStatus = r => r.passThrough ? ['透传', 'is-unknown'] : !r.complete ? ['数据不完整', 'is-unknown'] : r.partial ? ['部分缺失', 'is-attention'] : (r.gap || 0) > C.EPS || (r.coverageGap || 0) > C.EPS ? ['存在风险', 'is-risk'] : r.risks.length ? ['需要关注', 'is-attention'] : ['未见缺口', 'is-ok'];
   function renderSummaryTable(result, extra) {
     const pageSize = extra.limit, total = result.total;
     const months = result.spanMonths && result.spanMonths.length ? result.spanMonths : [result.trace.month];

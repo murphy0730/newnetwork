@@ -98,15 +98,19 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
     let own = monthSet.has(m) ? engine.row(base.code, m, 'direct', source) : { known: false, raw: null, add: null, remove: null, supply: null, inventory: engine.inventorySnapshotDate ? engine.inventory.get(JSON.stringify([base.code, engine.inventorySnapshotDate])) || 0 : null, risks: [], sites: C.siteSummary([]) };
     if (monthSet.has(m) && !own.known && !own.passThrough && source === 'forecast') own = { ...own, known: true, zeroFilled: true, raw: 0, supply: own.add || 0 };
     const demandKnown = targets.every(t => t.kind !== '产业未确认' && t.monthly[i].demand != null);
-    const demand = applicable && demandKnown ? targets.reduce((sum, t) => sum + t.monthly[i].demand, 0) : null;
+    // 跨产业/最顶层允许「部分来源缺失」：部分 target 有已知需求时按已知部分合计并打 partial 标记；全部未知仍为数据不完整
+    const anyKnown = targets.some(t => t.monthly[i].demand != null);
+    const partial = mode !== 'direct' && !demandKnown && anyKnown && !own.passThrough;
+    const demand = applicable && (demandKnown || partial) ? targets.reduce((sum, t) => sum + (t.monthly[i].demand || 0), 0) : null;
     if (demand != null && !Number.isFinite(demand)) throw Error('BOM累计需求超出计算范围');
-    const complete = monthSet.has(m) && own.supply != null && demandKnown;
+    const complete = monthSet.has(m) && own.supply != null && (demandKnown || partial);
     const gap = !applicable ? 0 : complete ? demand + (own.remove || 0) - own.supply : null;
     const inventoryIncluded = periodMode === 'cumulative' || i === 0;
     const risks = own.risks.filter(r => r !== '预测总量不足' && r !== '预测或产业数据不完整');
     if (!complete && !own.passThrough) risks.unshift('预测或产业数据不完整');
+    if (partial) risks.unshift('部分来源数据缺失');
     if (gap > C.EPS) risks.unshift('预测总量不足');
-    return { month: m, raw: own.known ? own.raw : null, add: own.add, remove: own.remove, supply: own.supply, demand, gap, inventoryIncluded, inventory: inventoryIncluded ? own.inventory : null, coverageGap: !inventoryIncluded ? null : !applicable ? 0 : gap != null && own.inventory != null ? gap - own.inventory : null, complete, passThrough: own.passThrough, risks, sites: own.sites.sites, siteCount: own.sites.count, maxShare: own.sites.maxShare, unassigned: own.sites.unassigned };
+    return { month: m, raw: own.known ? own.raw : null, add: own.add, remove: own.remove, supply: own.supply, demand, gap, inventoryIncluded, inventory: inventoryIncluded ? own.inventory : null, coverageGap: !inventoryIncluded ? null : !applicable ? 0 : gap != null && own.inventory != null ? gap - own.inventory : null, complete, passThrough: own.passThrough, partial, risks, sites: own.sites.sites, siteCount: own.sites.count, maxShare: own.sites.maxShare, unassigned: own.sites.unassigned };
   });
   const complete = months.length === span && monthly.every(r => r.complete);
   const sum = key => monthly.every(r => r[key] != null) && months.length === span ? monthly.reduce((s, r) => s + r[key], 0) : null;
@@ -125,7 +129,7 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
   if (!complete) risks.unshift('预测或产业数据不完整');
   if (gap > C.EPS) risks.unshift('预测总量不足');
   for (const target of targets) target.demand = target.monthly.length === span && target.monthly.every(r => r.demand != null) ? target.monthly.reduce((s, r) => s + r.demand, 0) : null;
-  const aggregate = { raw: sum('raw'), add: sum('add'), remove: sum('remove'), supply, demand, gap, inventory, coverageGap: !applicable ? 0 : gap != null && inventory != null ? gap - inventory : null, firstShortage, complete, passThrough: monthly.some(r => r.passThrough), risks, sites: periodSites.sites, siteCount: periodSites.count, maxShare: periodSites.maxShare };
+  const aggregate = { raw: sum('raw'), add: sum('add'), remove: sum('remove'), supply, demand, gap, inventory, coverageGap: !applicable ? 0 : gap != null && inventory != null ? gap - inventory : null, firstShortage, complete, passThrough: monthly.some(r => r.passThrough), partial: monthly.some(r => r.partial), risks, sites: periodSites.sites, siteCount: periodSites.count, maxShare: periodSites.maxShare };
   const periods = periodMode === 'cumulative' ? [{ ...aggregate, inventoryIncluded: true, start: months[0], end: months.at(-1), label: periodLabel(months[0], months.at(-1)) }] : monthly.map(r => ({ ...r, start: r.month, end: r.month, label: periodLabel(r.month, r.month) }));
   return { ...base, ...aggregate, applicable, targets, targetCount: targets.length, periodMode, periods, monthly: span > 1 ? monthly : undefined };
 }

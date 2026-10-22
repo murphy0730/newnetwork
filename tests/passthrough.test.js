@@ -3,7 +3,7 @@
 // 场景对应：C→B→A 中 B 无预测时，C 仍能拿到 A 的预测；B 只透传，不计自身缺口。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const C = require('../forecast-core'), { Service } = require('../server/service');
+const C = require('../forecast-core'), { Service } = require('../server/service'), ServerEngine = require('../server/engine');
 
 const VERSION = '2026-09-24', MONTH = '2026-09';
 // A 是顶层，B 是组件，C 是原料；A→B→C 配比 1:1。
@@ -124,6 +124,46 @@ test('多层连续无预测：直接父子停在 B2（按 0），跨产业/最�
   assert.deepEqual(e.relations('C', 'cross', MONTH, true).map(r => r.code), ['A']);
   assert.equal(e.compute(MONTH, 'cross').get('B1').passThrough, true);
   assert.equal(e.compute(MONTH, 'cross').get('B2').passThrough, true);
+});
+
+test('部分路径无预测：跨产业与最顶层均按已知部分计算并标注部分缺失', () => {
+  const s = C.empty(), t = s.tables;
+  for (const code of ['B1', 'B2', 'D', 'C']) t.attributes.push({ code, make_dept: 'X', lead_mean: 1 });
+  t.bom.push({ id: '1', parent: 'B1', child: 'C', qty: 1 }, { id: '2', parent: 'B2', child: 'C', qty: 1 }, { id: '3', parent: 'D', child: 'B2', qty: 1 });
+  t.forecast.push({ plan_date: VERSION, code: 'B1', month: MONTH, qty: 30, site_code: 'S' }, { plan_date: VERSION, code: 'C', month: MONTH, qty: 50, site_code: 'S' });
+  const e = new C.Engine(s);
+  const cc = e.compute(MONTH, 'cross').get('C');
+  assert.equal(cc.demand, 30);            // B1 已知 30 + B2 未知路径不计
+  assert.equal(cc.gap, -20);              // 30 − 50 = −20（富余）
+  assert.equal(cc.complete, true);
+  assert.equal(cc.partial, true);
+  assert.ok(cc.risks.includes('部分来源数据缺失'));
+  assert.ok(!cc.risks.includes('预测或产业数据不完整'));
+  const cd = e.compute(MONTH, 'direct').get('C');
+  assert.equal(cd.demand, 30); assert.equal(cd.partial, false);
+  const ct = e.compute(MONTH, 'top').get('C');
+  assert.equal(ct.demand, 30); assert.equal(ct.complete, true); assert.equal(ct.partial, true);   // top 已启用：已知根贡献 30，标部分缺失
+  const bal = new ServerEngine(s).balance('C', MONTH, 'cross');
+  assert.equal(bal.demand, 30); assert.equal(bal.gap, -20);
+});
+
+test('部分缺失在服务层汇总表与 KPI 中同样生效', () => {
+  const service = new Service(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tower-partial-')), 't.sqlite'));
+  try {
+    const s = C.empty(), t = s.tables;
+    for (const [code, dept] of [['B1', 'Y'], ['B2', 'X'], ['D', 'Z'], ['C', 'X']]) t.attributes.push({ code, make_dept: dept, lead_mean: 1 });
+    t.bom.push({ id: '1', parent: 'B1', child: 'C', qty: 1 }, { id: '2', parent: 'B2', child: 'C', qty: 1 }, { id: '3', parent: 'D', child: 'B2', qty: 1 });
+    t.forecast.push({ plan_date: VERSION, code: 'B1', month: MONTH, qty: 30, site_code: 'S' }, { plan_date: VERSION, code: 'C', month: MONTH, qty: 50, site_code: 'S' });
+    service.publish(s, 0, 'test', 'test');
+    const row = service.list({ summary: 1, role: 'supply', code: 'C', month: MONTH, mode: 'cross', span: 1, limit: 20 }, 'test').rows[0];
+    assert.equal(row.demand, 30); assert.equal(row.gap, -20); assert.equal(row.complete, true); assert.equal(row.partial, true);
+    assert.ok(row.risks.includes('部分来源数据缺失'));
+    const incomplete = service.list({ month: MONTH, mode: 'cross', risk: 'incomplete', limit: 100 }, 'test');
+    assert.ok(!incomplete.rows.some(r => r.code === 'C'), 'C 有部分缺失但可计算，不计入数据不完整筛选');
+    // 最顶层（top）同样启用部分计算：已知根贡献 30，标部分缺失
+    const topRow = service.list({ summary: 1, role: 'supply', code: 'C', month: MONTH, mode: 'top', span: 1, limit: 20 }, 'test').rows[0];
+    assert.equal(topRow.demand, 30); assert.equal(topRow.gap, -20); assert.equal(topRow.partial, true);
+  } finally { service.store.close(); }
 });
 
 test('无预测透传编码可在搜索栏搜到（按编码，部门显示未知部门）', () => {

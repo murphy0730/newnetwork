@@ -29,8 +29,34 @@ test('monthly vs period single-site, unknown sites, zero rows and concentration'
   assert.equal(C.siteSummary([{ qty: 10, site_code: 'S1' }, { qty: 10 }]).single, false);
   assert.equal(C.siteSummary([{ qty: 0 }]).single, false);
 });
-test('missing forecasts are unknown, explicit zero is a real plan; versions stay isolated', () => {
-  const { s, m, v } = example(); s.tables.forecast = s.tables.forecast.filter(r => r.code !== 'C' || r.month !== m); s.tables.forecast.push({ code: 'C', month: m, plan_date: '2020-01-01', qty: 30000, site_code: 'S3' }); const e = new C.Engine(s, v); assert.equal(e.compute(m).get('A').gap, null); s.tables.forecast.push({ code: 'C', month: m, plan_date: v, qty: 0, site_code: 'S3' }); assert.equal(new C.Engine(s, v).compute(m).get('A').demand, 800);
+test('部分来源缺失按已知部分计算并标注；显式 0 仍是有效预测；版本保持隔离', () => {
+  const { s, m, v } = example(); s.tables.forecast = s.tables.forecast.filter(r => r.code !== 'C' || r.month !== m); s.tables.forecast.push({ code: 'C', month: m, plan_date: '2020-01-01', qty: 30000, site_code: 'S3' }); const e = new C.Engine(s, v);
+  const a = e.compute(m).get('A');
+  assert.equal(a.demand, 800);        // C 缺失时按已知部分（B=400×2）计算
+  assert.equal(a.gap, -200);          // 800 − 1000 = −200，而不是整体未知
+  assert.equal(a.partial, true);      // 标注部分来源缺失
+  s.tables.forecast.push({ code: 'C', month: m, plan_date: v, qty: 0, site_code: 'S3' }); assert.equal(new C.Engine(s, v).compute(m).get('A').demand, 800);
+});
+test('供应本身未知时不走部分计算：指令模式缺表2不能按 0 算出缺口', () => {
+  // mo 模式下表2为空 → supply 为 null。若 partial 越过 supply 未知置 complete，
+  // null 会被当成 0 参与减法，凭空算出「缺口 = 需求」。
+  const { s, m } = example(); const e = new C.Engine(s);
+  for (const mode of ['cross', 'top']) {
+    const r = e.compute(m, mode, 'mo').get('B');
+    assert.equal(r.supply, null, mode);
+    assert.equal(r.complete, false, mode);
+    assert.equal(r.partial, false, mode);
+    assert.equal(r.demand, null, mode);
+    assert.equal(r.gap, null, mode);
+    assert.ok(r.risks.includes('预测或产业数据不完整'), mode);
+    assert.ok(!r.risks.includes('部分来源数据缺失'), mode);
+  }
+  // 服务端 balance 走同一条规则，且缓存命中路径也要带 partial 标记
+  const ServerEngine = require('../server/engine'), engine = new ServerEngine(s);
+  for (const round of [1, 2]) {   // 第二轮命中缓存
+    const bal = engine.balance('B', m, 'cross', 'mo');
+    assert.equal(bal.supply, null); assert.equal(bal.demand, null); assert.equal(bal.gap, null); assert.equal(bal.partial, false);
+  }
 });
 test('inventory snapshot exclusions and cumulative inventory counted once', () => {
   // 表4新规则：取当日最新快照（不晚于今天的最大日期）。夹具自带当月1日 200；今天的正常快照 999 生效，备件类型仍被排除
