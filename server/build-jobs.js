@@ -141,10 +141,10 @@ class BuildJobs {
     let item; try { item = JSON.parse(fs.readFileSync(this.file('uploads', id), 'utf8')); } catch { throw failure('上传文件已释放或过期，请重新上传', 404); }
     if (item.actor !== actor || item.expires < Date.now()) throw failure('上传文件已过期或无权访问', 404); return item;
   }
-  previewRecord(actor, filename, baseRevision, result) {
+  previewRecord(actor, filename, baseRevision, result, jobId) {
     const id = randomUUID(), preview = { id, actor, path: filename, baseRevision, expires: Date.now() + 86400000 };
     this.write(this.file('previews', id), preview);
-    return { previewId: id, baseRevision, summaries: result.summaries || [], warnings: result.manifest.warnings, counts: result.manifest.counts, replacesSample: !!result.replacesSample, buildId: result.manifest.buildId, codes: result.manifest.codes, versions: result.manifest.versions, issues: result.issues };
+    return { previewId: id, jobId, baseRevision, summaries: result.summaries || [], warnings: result.manifest.warnings, counts: result.manifest.counts, replacesSample: !!result.replacesSample, buildId: result.manifest.buildId, codes: result.manifest.codes, versions: result.manifest.versions, issues: result.issues };
   }
   preview(body, actor) {
     const files = [], resources = [];
@@ -154,14 +154,14 @@ class BuildJobs {
       const output = path.join(this.catalog.artifactDir, randomUUID() + '.supply'); resources.push(output + '.partial', output + '.partial-journal');
       return this.create(actor, 'build', async (job, progress) => {
         const result = await this.child(job, { operation: 'preview', files, body, base: { dbPath: this.catalog.path, revision: body.baseRevision }, output }, progress);
-        return this.previewRecord(actor, output, body.baseRevision, result);
+        return this.previewRecord(actor, output, body.baseRevision, result, job.id);
       }, resources, false, [output]);
     } catch (e) { this.cleanup(resources); throw e; }
   }
   uploadArtifact(item, baseRevision) {
     if (baseRevision !== this.catalog.revision()) { this.cleanup([item.path]); throw failure('数据版本已变化，请重新上传产物', 409); }
     return this.create(item.actor, 'verify', async (job, progress) => {
-      try { const result = await this.child(job, { action: 'verify', path: item.path }, progress); return this.previewRecord(item.actor, item.path, baseRevision, result); }
+      try { const result = await this.child(job, { action: 'verify', path: item.path }, progress); return this.previewRecord(item.actor, item.path, baseRevision, result, job.id); }
       catch (e) { this.cleanup([item.path]); throw e; }
     }, [item.path], true);
   }

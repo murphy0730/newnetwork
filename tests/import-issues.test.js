@@ -9,11 +9,10 @@ test('all files and later CSV batches are scanned; reports exceed parser/UI erro
   fs.writeFileSync(forecast, 'plan_date,code,month,qty,site_code\n' + Array.from({ length: 2501 }, (_, i) => `2026-09-10,P${i},2026-09,invalid${i},S1\n`).join(''));
   fs.writeFileSync(bom, 'parent,child,qty\nA,B,bad-ratio\n');
   fs.writeFileSync(attr, 'part_no,make_dept\nB,\nA,D\n');
-  let failure;
-  try { await run({ output, files: [{ path: forecast, table: 'forecast' }, { path: bom, table: 'bom' }, { path: attr, table: 'attributes' }] }); } catch (e) { failure = e; }
-  assert.ok(failure); assert.ok(failure.issues.errors >= 2502); assert.equal(failure.details.length, 100);
-  assert.ok(failure.issues.byTable.forecast >= 2501); assert.ok(failure.issues.byTable.bom >= 1); assert.ok(failure.issues.byTable.attributes >= 1);
-  assert.equal(fs.existsSync(output), false);
+  const result = await run({ output, files: [{ path: forecast, table: 'forecast' }, { path: bom, table: 'bom' }, { path: attr, table: 'attributes' }] });
+  assert.ok(result.issues.errors >= 2502); assert.equal(result.issues.preview.length, 100);
+  assert.ok(result.issues.byTable.forecast >= 2501); assert.ok(result.issues.byTable.bom >= 1); assert.ok(result.issues.byTable.attributes >= 1);
+  assert.equal(fs.existsSync(output), true);   // 无效行被过滤，导入仍成功
   const csv = fs.readFileSync(output + '.issues.forecast.csv', 'utf8');
   assert.ok(csv.includes('invalid2500')); assert.ok(csv.includes('"2502"')); assert.ok(csv.includes('P2500'));
   const rows = require('../server/importer').parseCSV(csv.replace(/^\uFEFF/, ''));
@@ -36,10 +35,8 @@ test('空 make_dept 按「未知部门」保留在范围内；小配比 BOM 仍�
 test('every supported API input table gets its own downloadable issue file', async () => {
   const root = dir(), output = path.join(root, 'result.supply');
   const batches = Object.keys(C.schemas).map(table => ({ table, rows: [{}] }));
-  await assert.rejects(run({ output, body: { batches } }), e => {
-    for (const table of Object.keys(C.schemas)) assert.ok(e.issues.byTable[table] > 0, table);
-    return true;
-  });
+  const result = await run({ output, body: { batches } });
+  for (const table of Object.keys(C.schemas)) assert.ok(result.issues.byTable[table] > 0, table);
   for (const table of Object.keys(C.schemas)) assert.ok(fs.existsSync(output + '.issues.' + table + '.csv'));
 });
 
@@ -49,9 +46,8 @@ test('Excel scans multiple selected worksheets and preserves worksheet names in 
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['说明'], ['plan_date', 'code', 'month', 'qty'], ['2026-09-10', 'BAD-XLSX', '2026-09', 'bad']]), '预测来源');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['parent', 'child', 'qty'], ['A', 'B', 'bad']]), 'BOM来源');
   fs.writeFileSync(filename, XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
-  await assert.rejects(run({ output, files: [{ path: filename, selections: [{ table: 'forecast', sheet: '预测来源', headerRow: 1 }, { table: 'bom', sheet: 'BOM来源', headerRow: 0 }] }] }), e => {
-    assert.ok(e.issues.byTable.forecast); assert.ok(e.issues.byTable.bom); return true;
-  });
+  const result = await run({ output, files: [{ path: filename, selections: [{ table: 'forecast', sheet: '预测来源', headerRow: 1 }, { table: 'bom', sheet: 'BOM来源', headerRow: 0 }] }] });
+  assert.ok(result.issues.byTable.forecast); assert.ok(result.issues.byTable.bom);
   const csv = fs.readFileSync(output + '.issues.forecast.csv', 'utf8');
   assert.ok(csv.includes('预测来源')); assert.ok(csv.includes('"3","BAD-XLSX"'));
 });
@@ -74,9 +70,26 @@ test('filter-rule data never blocks CSV import: small BOM ratios and empty make_
   } finally { artifact.close(); }
 });
 
+test('BOM 循环依赖剔除成环边后继续导入，问题写入清单且可正常计算', async () => {
+  const root = dir(), output = path.join(root, 'result.supply');
+  const data = C.sample();
+  data.tables.bom.push({ parent: 'D', child: 'B', qty: 1 });   // B→A→D→B 形成循环
+  const result = await run({ output, body: { batches: Object.entries(data.tables).filter(([, rows]) => rows.length).map(([table, rows]) => ({ table, rows })) } });
+  assert.ok(result.manifest.codes > 0);   // 导入成功，未被循环依赖阻断
+  assert.ok(result.issues.errors > 0);
+  const csv = fs.readFileSync(output + '.issues.bom.csv', 'utf8');
+  assert.ok(csv.includes('循环依赖'));
+  const artifact = new Artifact(output); try {
+    assert.equal([...artifact.rows('table/bom')].length, data.tables.bom.length - 1);   // 剔除一条成环边
+  } finally { artifact.close(); }
+});
+
 test('association errors also have an untruncated report after the shared validation step', async () => {
   const root = dir(), output = path.join(root, 'result.supply');
-  await assert.rejects(run({ output, body: { batches: [{ table: 'attributes', rows: Array.from({ length: 1201 }, () => ({ code: 'DUP', make_dept: 'D', lead_mean: 1 })) }] } }), e => { assert.equal(e.issues.errors, 1200); return true; });
+  const dupRows = Array.from({ length: 1201 }, () => ({ code: 'DUP', make_dept: 'D', lead_mean: 1 }));
+  const result = await run({ output, body: { batches: [{ table: 'attributes', rows: dupRows }] } });
+  assert.equal(result.issues.errors, 1200);   // 重复键全部入清单但不阻断导入
+  const artifact = new Artifact(output); try { assert.equal([...artifact.rows('table/attributes')].length, 1); } finally { artifact.close(); }   // 仅保留首行
   const csv = fs.readFileSync(output + '.issues.attributes.csv', 'utf8');
   assert.ok(csv.includes('"1202"')); assert.ok(csv.includes('重复键'));
 });

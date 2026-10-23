@@ -14,7 +14,7 @@ function normalized(table, rows, issues) {
     const invalid = new Set(part.errors.map(e => e.row));
     for (const e of meaningful) {
       const raw = rows[e.row + i - 2] || {}, key = Object.keys(C.schemas[table].fields).find(k => C.schemas[table].fields[k].label === e.field);
-      issues.add({ ...e, row: e.row + i, table, code: raw.code ?? raw.part_no ?? raw['编码'], parent: raw.parent ?? raw['父项'], child: raw.child ?? raw['子项'], value: raw[e.field] ?? raw[key], raw });
+      issues.add({ ...e, row: e.row + i, table, code: raw.code ?? raw.part_no ?? raw['编码'], parent: raw.parent ?? raw['父项'], child: raw.child ?? raw['子项'], value: raw[e.field] ?? raw[key], raw, action: '剔除问题行，不计入计算，其余数据正常导入' });
     }
     if (issues && table === 'bom') for (let j = i; j < Math.min(i + 2000, rows.length); j++) {
       const r = rows[j], value = r.qty ?? r[C.schemas.bom.fields.qty.label];
@@ -23,6 +23,38 @@ function normalized(table, rows, issues) {
     for (const row of part.rows) if (!invalid.has(row._source.row)) { row._source.row += i; result.push(row); }
   }
   return result;
+}
+
+// 问题数据不阻断导入：重复键仅保留首行、BOM 成环边逐条剔除，均写入问题清单，剩余数据继续构建。
+function sanitizeSnapshot(snapshot, issues, progress) {
+  for (const key of Object.keys(C.schemas)) {
+    const rows = snapshot.tables[key], seen = new Set(), keep = [];
+    for (const r of rows) {
+      let id;
+      if (key === 'attributes') id = r.code;
+      if (key === 'mo') id = r.mo_no;
+      if (key === 'adjust') id = JSON.stringify([r.direction, r.code, r.purchase_code || '', r.month]);
+      if (key === 'bom') id = r.id ? 'id:' + r.id : JSON.stringify([r.parent, r.child]);
+      if (key === 'inventory' && r.id) id = JSON.stringify([r.date, r.id]);
+      if (id === undefined) { keep.push(r); continue; }
+      if (seen.has(id)) { issues.add({ table: key, ...(r._source || {}), field: '重复键', value: id, code: r.code, parent: r.parent, child: r.child, raw: r, message: `${C.schemas[key].label}存在重复键：${id}`, action: '剔除重复行，不计入计算，其余数据正常导入' }); continue; }
+      seen.add(id); keep.push(r);
+    }
+    snapshot.tables[key] = keep;
+  }
+  for (let guard = 0; guard < 1000; guard++) {
+    try { C.topology(snapshot.tables); break; }
+    catch (e) {
+      const message = String(e.message || '');
+      if (!message.includes('循环依赖')) throw e;
+      const codes = new Set(message.replace(/^BOM存在循环依赖：/, '').split('、'));
+      const index = snapshot.tables.bom.findIndex(r => codes.has(r.parent) && codes.has(r.child));
+      if (index < 0) throw e;
+      const [removed] = snapshot.tables.bom.splice(index, 1);
+      issues.add({ table: 'bom', ...(removed._source || {}), field: 'BOM', value: removed.id || `${removed.parent}→${removed.child}`, parent: removed.parent, child: removed.child, raw: removed, message: 'BOM存在循环依赖，已剔除成环边', action: '剔除成环边，不计入计算，其余数据正常导入' });
+      progress({ phase: 'validate', message: `剔除循环依赖边 ${removed.parent}→${removed.child}`, percent: 26 });
+    }
+  }
 }
 async function run(spec, progress = () => {}) {
   const body = spec.body || {}, operation = spec.operation || 'preview';
@@ -61,18 +93,11 @@ async function run(spec, progress = () => {}) {
       if (dropped) { progress({ phase: 'scope', message: `编码范围以表1∩表6制造部门为准（${scope.range}个编码），过滤 ${dropped} 行超范围数据`, percent: 22 }); spec.scopeWarning = `编码范围预处理：以表1编码且表6已维护制造部门为准（${scope.range}个编码），预测 ${scope.before.forecast}→${scope.after.forecast}、库存 ${scope.before.inventory}→${scope.after.inventory}、BOM ${scope.before.bom}→${scope.after.bom}`; }
     }
     progress({ phase: 'validate', message: '校验表关联与BOM循环依赖', percent: 25 });
-    const validation = C.validate(next);
-    if (validation.errors.length) {
-      const bySource = new Map();
-      for (const [table, rows] of Object.entries(next.tables)) for (const row of rows) if (row._source) bySource.set(JSON.stringify([row._source.file, row._source.sheet, row._source.row]), { table, row });
-      for (const detail of validation.errors) {
-        const found = bySource.get(JSON.stringify([detail.file, detail.sheet, detail.row]));
-        const table = found?.table || Object.keys(C.schemas).find(t => detail.message.startsWith(C.schemas[t].label)) || (detail.field === 'BOM' ? 'bom' : detail.field === '使用剔除' ? 'adjust' : 'unknown');
-        issues.add({ ...detail, table, code: found?.row.code, parent: found?.row.parent, child: found?.row.child, raw: found?.row });
-      }
-    }
-    if (issues.counts.errors) throw fail('字段校验失败；本批次各输入表的问题已汇总，请下载完整清单', 422);
-    const manifest = buildSnapshot(next, spec.output, { progress, validation, sources: [...sources, ...(spec.base ? [{ base: spec.base }] : [])] });
+    // 不再因问题数据阻断导入：重复键行与成环边剔除后继续构建；无法自动剔除的问题才失败
+    sanitizeSnapshot(next, issues, progress);
+    const finalValidation = C.validate(next);
+    if (finalValidation.errors.length) throw fail('关联校验失败（存在无法自动剔除的问题）', 422, finalValidation.errors);
+    const manifest = buildSnapshot(next, spec.output, { progress, validation: finalValidation, sources: [...sources, ...(spec.base ? [{ base: spec.base }] : [])] });
     if (spec.scopeWarning) manifest.warnings.push(spec.scopeWarning);
     return { path: spec.output, manifest, summaries, warnings: manifest.warnings, counts: manifest.counts, replacesSample: base.kind === 'sample' && operation === 'preview', issues: issues.summary() };
   } catch (e) {

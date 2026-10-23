@@ -33,13 +33,14 @@ test('online builds release failed uploads, preserve baseline, reject stale acti
     const header = 'plan_date,code,month,qty,site_code\n';
     for (let attempt = 0; attempt < 3; attempt++) {
       const file = await upload(header + '2026-09-10,RETRY,2026-09,invalid,S1\n');
-      const failed = await poll(await request('/api/import/preview', previewBody(file, 1)), false);
-      assert.equal(failed.error.details[0].row, 2); assert.equal((await request('/api/meta')).revision, 1);
-      const report = await fetch(base + '/api/jobs/' + failed.id + '/issues?table=forecast');
+      const badResponse = await request('/api/import/preview', previewBody(file, 1));
+      const bad = await poll(badResponse);   // 无效行被过滤，预览完成而非失败
+      assert.ok(bad.issues.total > 0 && bad.issues.byTable.forecast > 0);
+      const report = await fetch(base + '/api/jobs/' + badResponse.jobId + '/issues?table=forecast');
       assert.equal(report.status, 200); assert.ok((await report.text()).includes('RETRY'));
-      assert.ok(failed.issues.total > 0);
-      failedId = failed.id;
-      assert.equal((await fetch(base + '/api/jobs/' + failed.id + '/issues?table=__proto__')).status, 400);
+      assert.equal((await request('/api/meta')).revision, 1);   // 未装载前基线不变
+      failedId = badResponse.jobId;
+      assert.equal((await fetch(base + '/api/jobs/' + badResponse.jobId + '/issues?table=__proto__')).status, 400);
       await pause(50); assert.deepEqual(fs.readdirSync(dbPath + '.tasks/uploads'), []);
       assert.deepEqual(fs.readdirSync(path.join(dir, 'catalog.sqlite.builds')).filter(f => f.includes('partial')), []);
     }
