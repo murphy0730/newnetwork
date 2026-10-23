@@ -10,7 +10,7 @@
   const opt = (value, label, selected) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(label)}</option>`;
   const select = (id, label, values, value) => `<label>${label}<select id="${id}">${values.map(([v, l]) => opt(v, l, value)).join('')}</select></label>`;
   const table = (heads, rows, empty = '暂无数据') => `<div class="fc-tablewrap"><table class="fc-table"><thead><tr>${heads.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${heads.length}" class="fc-muted">${empty}</td></tr>`}</tbody></table></div>`;
-  const state = { tab: 'overview', view: 'graph', version: '', month: '', mode: 'direct', source: 'forecast', role: 'supply', code: '', search: '', risk: '', site: [], codes: [], industry: '', category: '', layout: 'layered', layoutPicked: false, lod: 'L0', mapNav: null, cluster: 'none', colorBy: 'level', depth: 3, highlight: '', span: 3, tableSpan: 1, tablePeriodMode: 'individual', offset: 0, scenario: '', graphRelations: 'scope', filterOpen: true, edgeOpacity: 0.8, edgeDirection: 'top-down', ratioStyle: 'times', showKpi: true, showRatio: null, hideIsolated: null, showZero: true, persona: 'planner' };
+  const state = { tab: 'overview', view: 'graph', version: '', month: '', mode: 'direct', source: 'forecast', role: 'supply', code: '', search: '', risk: '', site: [], codes: [], industry: '', category: '', layout: 'layered', layoutPicked: false, lod: 'L0', mapNav: null, cluster: 'none', colorBy: 'level', depth: 3, highlight: '', span: 3, tableSpan: 1, tablePeriodMode: 'individual', hideEmptySources: false, offset: 0, scenario: '', graphRelations: 'scope', filterOpen: true, edgeOpacity: 0.8, edgeDirection: 'top-down', ratioStyle: 'times', showKpi: true, showRatio: null, hideIsolated: null, showZero: true, persona: 'planner' };
   // 布局：force 力导向 / layered 分层（经典渲染器） / map 地图（LOD 渲染器 ForecastGraphMap）。
   // 未手动选过布局且节点超阈值时自动进地图模式防止卡死；手动选择后本会话不再自动切换。
   const MAP_AUTO_THRESHOLD = 800;
@@ -221,6 +221,18 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     const pageSize = extra.limit, total = result.total;
     const months = result.spanMonths && result.spanMonths.length ? result.spanMonths : [result.trace.month];
     const cumulative = result.periodMode === 'cumulative', groups = result.periods;
+    if (!$('tbl-hide-empty')) {
+      const actions = document.createElement('span'); actions.className = 'fc-row';
+      $('export-table').before(actions); actions.append($('export-table'));
+      actions.insertAdjacentHTML('beforeend', '<button type="button" class="btn sm ghost" id="tbl-hide-empty" aria-describedby="tbl-count">隐藏无量来源：关</button>');
+    }
+    const hideEmpty = state.hideEmptySources, toggle = $('tbl-hide-empty');
+    toggle.textContent = '隐藏无量来源：' + (hideEmpty ? `开（本页${result.rows.reduce((sum, r) => sum + (r.targets || []).filter(t => t.empty).length, 0)}条）` : '关');
+    toggle.setAttribute('aria-pressed', String(hideEmpty)); toggle.className = 'btn sm ' + (hideEmpty ? 'primary' : 'ghost');
+    toggle.title = '隐藏所选全部月份预测为0或空、有效库存为0或空，且无非零使用剔除或外购增加量的来源；不改变供需计算';
+    toggle.onclick = () => { state.hideEmptySources = !state.hideEmptySources; renderSummaryTable(result, extra); };
+    const shownTargets = r => { const targets = hideEmpty ? (r.targets || []).filter(t => !t.empty) : r.targets; return targets?.length ? targets : [null]; };
+    const sourceLabel = (r, target) => target?.code || (hideEmpty && r.targets?.length ? '已隐藏全部无量来源' : '—');
     $('tbl-span').onchange = () => { state.tableSpan = Number($('tbl-span').value); state.offset = 0; render(); };
     $('tbl-period-mode').onchange = () => { state.tablePeriodMode = $('tbl-period-mode').value; state.offset = 0; render(); };
     $('tbl-count').textContent = (cumulative ? `累计月份：${months.length}个月合并为1组供需合计，库存只计起始月一次。` : `单独月份：${months.length}个月分别展示${groups.length}组结果，不跨月累加；首月含库存和不含库存两版，后续均不计库存。`) + '结余为负即缺口，为正即富余。KPI与风险筛选按起始月。';
@@ -232,11 +244,11 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     const numberHeads = g => ['表1预测', '供应添加', '使用剔除', '净供应', '来源折算需求', demandLabel, '供需结余', ...(g.inventoryIncluded ? ['最新库存', '库存后结余'] : []), '状态', '加工地', '风险标签', ...(cumulative ? ['首次累计缺口月'] : [])];
     const head = '<thead><tr>' + leadHeads.map(h => '<th rowspan="2">' + h + '</th>').join('') + groups.map(g => '<th colspan="' + numberHeads(g).length + '" data-period-start="' + esc(g.start) + '" data-period-end="' + esc(g.end) + '">' + esc(g.label) + '</th>').join('') + '</tr><tr>' + groups.map(g => numberHeads(g).map(h => '<th>' + h + '</th>').join('')).join('') + '</tr></thead>';
     const body = result.rows.map(r => {
-      const targets = r.targets?.length ? r.targets : [null], n = targets.length;
+      const targets = shownTargets(r), n = targets.length;
       const shared = (content, i) => i === 0 ? '<td rowspan="' + n + '">' + content + '</td>' : '';
       return targets.map((target, i) => '<tr data-supplier="' + esc(r.code) + '" class="' + (i === 0 ? 'supplier-start' : '') + '">' +
         [codeLink(r.code), '<span class="wrap">' + esc(r.name || '—') + '</span>', esc(r.make_dept || '—'), esc(r.category || '—')].map(v => shared(v, i)).join('') +
-        '<td>' + (target ? codeLink(target.code) : '—') + '</td><td>' + esc(target?.make_dept || '—') + '</td><td>' + esc(sourceCoeff(target)) + '</td>' +
+        '<td>' + (target ? codeLink(target.code) : esc(sourceLabel(r, target))) + '</td><td>' + esc(target?.make_dept || '—') + '</td><td>' + esc(sourceCoeff(target)) + '</td>' +
         r.periods.map((x, mi) => {
           const [status, cls] = rowStatus(x), contribution = cumulative ? target?.demand : target?.monthly[mi]?.demand;
           return [x.raw, x.add, x.remove, x.supply].map(v => shared(fmt(v), i)).join('') + '<td>' + fmt(contribution) + '</td>' + shared(fmt(x.demand), i) + shared(bal(x.gap), i) + (x.inventoryIncluded ? shared(fmt(x.inventory), i) + shared(bal(x.coverageGap), i) : '') + shared('<span class="ins-status ' + cls + '">' + status + '</span>', i) + shared(siteCell(x), i) + shared(riskCell(x), i) + (cumulative ? shared(esc(x.firstShortage || '—'), i) : '');
@@ -257,8 +269,8 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     $('export-table').onclick = () => busy('正在导出当前筛选结果…', async () => {
       const rows = [];
       for (let off = 0; off < total; off += 1000) { const q = new URLSearchParams(exportQuery); q.set('offset', off); q.set('limit', 1000); q.set('revision', result.trace.revision); const d = await api('/api/analysis?' + q); rows.push(...d.rows); }
-      const output = rows.flatMap(r => (r.targets?.length ? r.targets : [null]).map((target, i) => {
-        const out = { 编码: r.code, 名称: r.name, 产业部门: r.make_dept, 产品大类: r.category, [relationLabel]: target?.code || '—', 来源产业: target?.make_dept || '—', 累计BOM用量: target?.coeff ?? (target ? sourceCoeff(target) : ''), 汇总值说明: i === 0 ? '本编码合计（仅首行记载）' : '来源明细（合计见本编码首行）' };
+      const output = rows.flatMap(r => shownTargets(r).map((target, i) => {
+        const out = { 编码: r.code, 名称: r.name, 产业部门: r.make_dept, 产品大类: r.category, [relationLabel]: sourceLabel(r, target), 来源产业: target?.make_dept || '—', 累计BOM用量: target?.coeff ?? (target ? sourceCoeff(target) : ''), 汇总值说明: i === 0 ? '本编码合计（仅首行记载）' : '来源明细（合计见本编码首行）' };
         for (const [mi, x] of r.periods.entries()) {
           const label = x.label; out['来源BOM用量 ' + label] = cumulative ? target?.coeff ?? (target ? sourceCoeff(target) : '') : target?.monthly[mi]?.coeff ?? ''; out['来源折算需求 ' + label] = (cumulative ? target?.demand : target?.monthly[mi]?.demand) ?? '';
           for (const [name, key, sign] of [['表1预测', 'raw'], ['供应添加', 'add'], ['使用剔除', 'remove'], ['净供应', 'supply'], [demandLabel, 'demand'], ['供需结余', 'gap', -1], ...(x.inventoryIncluded ? [['最新库存', 'inventory'], ['库存后结余', 'coverageGap', -1]] : [])]) out[name + ' ' + label] = i === 0 ? (x[key] == null ? '' : sign ? -x[key] || 0 : x[key]) : '';

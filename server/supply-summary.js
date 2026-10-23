@@ -3,6 +3,7 @@ const C = require('../forecast-core');
 const Query = require('./query-index');
 const cache = new WeakMap();
 const bottomRanks = new WeakMap();
+const adjustmentActivity = new WeakMap();
 
 function sortSuppliers(rows, engine) {
   let ranks = bottomRanks.get(engine);
@@ -42,6 +43,13 @@ function relations(engine, code, mode, month) {
 }
 
 function decorate(engine, base, month, span, months, mode, source, periodMode = 'individual') {
+  // 展示判断取原始表2；net模式不重复应用调整，但非零调整记录仍应保留展示。
+  let activeAdjustments = adjustmentActivity.get(engine);
+  if (!activeAdjustments) {
+    activeAdjustments = new Set();
+    for (const row of engine.t.adjust) if (row.qty) activeAdjustments.add(JSON.stringify([row.code, row.month]));
+    adjustmentActivity.set(engine, activeAdjustments);
+  }
   const monthSet = new Set(engine.months), targetMap = new Map();
   const linksByMonth = months.map(m => relations(engine, base.code, mode, m));
   for (const links of linksByMonth) for (const link of links) if (!targetMap.has(link.code)) {
@@ -59,6 +67,8 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
   for (const target of targets) {
     const coeffs = new Set(target.monthly.filter(r => r.active).map(r => r.coeff));
     target.coeff = coeffs.size === 1 ? coeffs.values().next().value : null;
+    const inventory = engine.inventorySnapshotDate ? engine.inventory.get(JSON.stringify([target.code, engine.inventorySnapshotDate])) || 0 : null;
+    target.empty = (inventory == null || inventory === 0) && target.monthly.every(r => (r.forecast == null || r.forecast === 0) && !activeAdjustments.has(JSON.stringify([target.code, r.month])));
   }
   const applicable = targets.length > 0;
   const monthly = months.map((m, i) => {

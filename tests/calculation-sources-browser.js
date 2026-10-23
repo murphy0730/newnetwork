@@ -24,6 +24,15 @@ function seedFixture(db) {
   for (const [code, qty] of [['A',100], ['C',50], ['R',100], ['V',50]]) f(code, qty, '2026-09');
   for (const [code, qty] of [['A',200], ['B',80], ['C',50], ['R',100], ['B1',30], ['V',50]]) f(code, qty, '2026-10');
   for (const [parent, child, qty] of [['A','B',1], ['B','C',1], ['R','B1',2], ['R','B2',3], ['B1','V',1], ['B2','V',1]]) data.tables.bom.push({ id: parent+'-'+child, parent, child, qty, parent_template: 'AI', child_template: 'AI' });
+  const parents = ['ZERO', 'MISSING', 'STOCK', 'NEG_STOCK', 'REMOVE', 'ADD', 'LATER', 'OUTSIDE', 'EXCLUDED', 'NEG_FORECAST'];
+  for (const code of [...parents, 'H', 'HONLY']) {
+    data.tables.attributes.push({ code, make_dept: parents.includes(code) ? 'X' : 'Y', lead_mean: 1 });
+    if (code !== 'MISSING') for (const month of ['2026-09', '2026-10']) f(code, code === 'H' || code === 'HONLY' ? 50 : code === 'NEG_FORECAST' ? -3 : code === 'LATER' && month === '2026-10' ? 4 : 0, month);
+  }
+  for (const parent of parents) data.tables.bom.push({ id: parent+'-H', parent, child: 'H', qty: 1, parent_template: 'AI', child_template: 'AI' });
+  for (const parent of ['ZERO', 'MISSING']) data.tables.bom.push({ id: parent+'-HONLY', parent, child: 'HONLY', qty: 1, parent_template: 'AI', child_template: 'AI' });
+  data.tables.inventory = [{ code: 'STOCK', date: '2020-01-01', qty: 8 }, { code: 'NEG_STOCK', date: '2020-01-01', qty: -2 }, { code: 'EXCLUDED', date: '2020-01-01', qty: 10, sub_type: '备件-坏件子库' }];
+  data.tables.adjust = [{ code: 'REMOVE', month: '2026-09', direction: '使用', qty: 3 }, { code: 'ADD', month: '2026-09', direction: '供应', qty: 5 }, { code: 'OUTSIDE', month: '2026-11', direction: '供应', qty: 9 }];
   const service = new Service(db); try { service.publish(data, 0, 'local', 'test'); } finally { service.store.close(); }
 }
 async function exported() {
@@ -75,6 +84,47 @@ async function exported() {
   await js("{const el=document.querySelector('#tbl-period-mode');el.value='cumulative';el.dispatchEvent(new Event('change'));}");
   await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===1"), 'cumulative');
   const cumulative = await exported(); assert.equal(cumulative.reduce((sum,r)=>sum+(r['跨产业总需求 2026年9-10月']||0),0),830);
+  await js("document.querySelector('#sc-code').value='H';document.querySelector('#apply').click()");
+  await wait(() => js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length===10"), 'all sources shown by default');
+  assert.equal(await js("document.querySelector('#tbl-hide-empty').getAttribute('aria-pressed')"), 'false');
+  const beforeHide = await exported();
+  const kpi = await js("document.querySelector('#kpi-grid').textContent");
+  await click('#tbl-hide-empty');
+  assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 6);
+  assert.equal(await js("document.querySelector('#tbl-hide-empty').getAttribute('aria-pressed')"), 'true');
+  assert.equal(await js("document.querySelector('#kpi-grid').textContent"), kpi);
+  const labels = { direct: '父项编码', cross: '跨产业编码', top: '最顶层编码' };
+  for (const mode of ['direct', 'cross', 'top']) {
+    await click('#seg-mode [data-mode="' + mode + '"]');
+    await wait(() => js("document.querySelector('#seg-mode [data-mode=" + mode + "]').classList.contains('active') && document.querySelectorAll('#tbl-body tr[data-supplier=H]').length===6"), 'hidden sources ' + mode);
+    const hidden = await exported();
+    assert.deepEqual(hidden.map(r=>r[labels[mode]]).sort(), ['ADD','LATER','NEG_FORECAST','NEG_STOCK','REMOVE','STOCK']);
+    assert.equal(hidden.reduce((sum,r)=>sum+(r['供需结余 2026年9-10月']||0),0), beforeHide.reduce((sum,r)=>sum+(r['供需结余 2026年9-10月']||0),0));
+    assert.equal(await js("document.querySelector('#tbl-body tr[data-supplier=H] td').rowSpan"), 6);
+  }
+  checks.push('toggle hides empty source rows in all three modes and Excel, retaining inventory, signed amounts and original adjustments');
+  await js("{const el=document.querySelector('#tbl-period-mode');el.value='individual';el.dispatchEvent(new Event('change'));}");
+  await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===2"), 'individual hidden sources');
+  assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 6);
+  await js("{const el=document.querySelector('#tbl-span');el.value='1';el.dispatchEvent(new Event('change'));}");
+  await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===1 && document.querySelectorAll('#tbl-body tr[data-supplier=H]').length===5"), 'single month hides later activity');
+  checks.push('multi-month visibility uses every selected month in both individual and cumulative views');
+  await click('#tbl-hide-empty');
+  assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 10);
+  await js("document.querySelector('#sc-code').value='HONLY';document.querySelector('#apply').click()");
+  await wait(() => js("document.querySelectorAll('#tbl-body tr[data-supplier=HONLY]').length===2"), 'all-empty sources');
+  const allEmpty = await exported();
+  await click('#tbl-hide-empty');
+  assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=HONLY]').length"), 1);
+  assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('已隐藏全部无量来源')"));
+  const placeholder = await exported();
+  assert.equal(placeholder.length, 1); assert.equal(placeholder[0]['最顶层编码'], '已隐藏全部无量来源');
+  for (const key of ['净供应 2026年9月', '最顶层总需求 2026年9月', '供需结余 2026年9月', '状态 2026年9月']) assert.equal(placeholder[0][key], allEmpty[0][key]);
+  const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(out, 'summary-source-visibility.png'), Buffer.from(screenshot.data, 'base64'));
+  await click('#tbl-hide-empty');
+  assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=HONLY]').length"), 2);
+  checks.push('all-hidden sources keep a labelled supplier total, and toggling off restores source rows');
   assert.deepEqual(errors, []); checks.push('cumulative export sums the per-month frontiers exactly once');
   fs.writeFileSync(path.join(out, 'calculation-sources-browser.json'), JSON.stringify({checks,errors,rows,varying,cumulative},null,2));
   console.log(JSON.stringify({checks,errors},null,2));
