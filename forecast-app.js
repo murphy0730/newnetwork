@@ -45,7 +45,7 @@
   function issueLinks(issues, jobId) {
     if (!issues?.total || !jobId) return '';
     const base = '/api/jobs/' + encodeURIComponent(jobId) + '/issues';
-    return '<div class="fc-notice warn"><b>本次发现 ' + fmt(issues.total) + ' 项数据问题</b>（阻断错误 ' + fmt(issues.errors) + ' / 数据缺失或过滤提示 ' + fmt(issues.warnings) + '）<p>清单保留文件、工作表、原始行号、问题字段、原因和原始内容；任务记录与清单保留7天，请及时下载。</p><div class="fc-controls"><a class="btn primary sm" href="' + base + '">下载完整问题清单 CSV</a>' + Object.entries(issues.byTable).map(([table, count]) => '<a class="btn ghost sm" href="' + base + '?table=' + encodeURIComponent(table) + '">' + esc(C.schemas[table]?.label || '文件/未识别表') + '（' + fmt(count) + '）</a>').join('') + '</div></div>';
+    return '<div class="fc-notice warn"><b>本次发现 ' + fmt(issues.total) + ' 项数据问题</b>（已按规则剔除 ' + fmt(issues.errors) + ' 行 / 数据缺失或过滤提示 ' + fmt(issues.warnings) + ' 项）<p>问题行不计入本次构建，其余数据已正常导入。清单保留文件、工作表、原始行号、问题字段、原因和原始内容；任务记录与清单保留7天，请及时下载。</p><div class="fc-controls"><a class="btn primary sm" href="' + base + '">下载完整问题清单 CSV</a>' + Object.entries(issues.byTable).map(([table, count]) => '<a class="btn ghost sm" href="' + base + '?table=' + encodeURIComponent(table) + '">' + esc(C.schemas[table]?.label || '文件/未识别表') + '（' + fmt(count) + '）</a>').join('') + '</div></div>';
   }
   function showError(e) {
     notify(e.message, 'err');
