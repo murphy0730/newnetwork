@@ -95,6 +95,7 @@ async function run(spec, progress = () => {}) {
     progress({ phase: 'validate', message: '校验表关联与BOM循环依赖', percent: 25 });
     // 不再因问题数据阻断导入：重复键行与成环边剔除后继续构建；无法自动剔除的问题才失败
     sanitizeSnapshot(next, issues, progress);
+    C.bomTemplateScope(next.tables.bom, issue => issues.add(issue));
     const finalValidation = C.validate(next);
     if (finalValidation.errors.length) throw fail('关联校验失败（存在无法自动剔除的问题）', 422, finalValidation.errors);
     const manifest = buildSnapshot(next, spec.output, { progress, validation: finalValidation, sources: [...sources, ...(spec.base ? [{ base: spec.base }] : [])] });

@@ -10,8 +10,9 @@ function summarize(rows, engine) {
   return dashboard;
 }
 function view(engine, month, mode, source) {
+  engine.refreshInventory();
   let views = engines.get(engine); if (!views) engines.set(engine, views = new Map());
-  const key = JSON.stringify([month, mode, source]);
+  const key = JSON.stringify([month, mode, source, engine.inventorySnapshotDate]);
   if (views.has(key)) return lru(views, key, views.get(key), 2);
   const rows = [...engine.compute(month, mode, source).values()];
   const dashboard = summarize(rows, engine);

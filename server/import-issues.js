@@ -30,9 +30,9 @@ function scopeIssues(t, issues) {
   }
   for (const r of t.forecast) if (r.qty > 0 && !r.site_code) issues.record('forecast', r, 'site_code', r.site_name ? '仅维护加工地名称，缺少加工地代码' : '正数量预测缺少加工地', '保留范围内记录；加工地分析按现有缺失规则处理');
   if (!depts.size) return;
-  for (const table of ['forecast', 'inventory', 'bom']) for (const r of t[table]) {
-    const outside = table === 'bom' ? !range.has(r.parent) || !range.has(r.child) : !range.has(r.code);
-    if (outside) issues.record(table, r, table === 'bom' ? 'parent/child' : 'code', '不在表1编码与表6有效制造部门编码的交集中', '按编码范围预处理规则排除，不参与本次分析');
+  // BOM关系范围由项目模板判断，不按预测或制造属性记录是否存在排除。
+  for (const table of ['forecast', 'inventory']) for (const r of t[table]) {
+    if (!range.has(r.code)) issues.record(table, r, 'code', '不在表1编码与表6有效制造部门编码的交集中', '按编码范围预处理规则排除，不参与本次分析');
   }
 }
 module.exports = { Issues, scopeIssues };

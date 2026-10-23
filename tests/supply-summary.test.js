@@ -30,7 +30,7 @@ test('supplier ordering is bottom-up, then scope sources, then forecast presence
   s.publish(data, 1, 'test', 'test');
   for (const mode of ['direct', 'cross', 'top']) {
     const all = s.list({ ...q, mode }, 'test');
-    const expected = mode === 'cross' ? ['DEEP', 'ZERO', 'MISSING', 'ISO', 'LOCAL', 'MID', 'ROOT'] : ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT'];
+    const expected = ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT'];
     assert.deepEqual(all.rows.map(r => r.code), expected, mode);
     const paged = [];
     for (let offset = 0; offset < all.total; offset += 2) paged.push(...s.list({ ...q, mode, limit: 2, offset }, 'test').rows.map(r => r.code));
@@ -39,9 +39,9 @@ test('supplier ordering is bottom-up, then scope sources, then forecast presence
     assert.deepEqual(filtered.rows.map(r => r.code), ['DEEP', 'MISSING', 'ROOT']);
   }
   const later = s.list({ ...q, mode: 'cross', month: '2026-10' }, 'test');
-  assert.deepEqual(later.rows.map(r => r.code), ['DEEP', 'MISSING', 'ZERO', 'ISO', 'LOCAL', 'MID', 'ROOT']);
+  assert.deepEqual(later.rows.map(r => r.code), ['DEEP', 'LOCAL', 'MISSING', 'ZERO', 'ISO', 'MID', 'ROOT']);
   // Multi-month display keeps the start-month ordering used by the table filters.
-  assert.deepEqual(s.list({ ...q, mode: 'cross', span: 2 }, 'test').rows.map(r => r.code), ['DEEP', 'ZERO', 'MISSING', 'ISO', 'LOCAL', 'MID', 'ROOT']);
+  assert.deepEqual(s.list({ ...q, mode: 'cross', span: 2 }, 'test').rows.map(r => r.code), ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT']);
 }));
 
 test('supplier table retains all codes; focus is exact and demand role is suspended only for summary', () => serviceTest(s => {
@@ -67,9 +67,10 @@ test('direct, cross and top rows expose source contributions; GAP subtracts supp
     assert.equal(r.demand, demand); assert.equal(r.gap, demand - 650); assert.equal(r.coverageGap, demand - 680);
     const risk = s.list({ ...q, mode, risk: 'shortage' }, 'test'); assert.equal(risk.rows.some(r => r.code === 'C'), !isCross);
     const focused = s.list({ ...q, mode, code: 'C', industry: 'c' }, 'test'); assert.equal(focused.rows[0].demand, demand);
-    assert.equal(focused.trace.relationRule, 'first-cross-industry-v2');
+    assert.equal(focused.trace.relationRule, 'resolved-frontier-v3');
   }
-  assert.equal(s.list({ ...q, mode: 'cross', code: 'B1' }, 'test').rows[0].applicable, false);
+  const b1 = s.list({ ...q, mode: 'cross', code: 'B1' }, 'test').rows[0];
+  assert.equal(b1.applicable, true); assert.equal(b1.demand, 200); assert.equal(b1.gap, 120);
   const multi = s.list({ ...q, mode: 'cross', code: 'C', span: 6 }, 'test').rows[0];
   assert.equal(multi.monthly.length, 6); assert.equal(multi.demand, 2040); assert.equal(multi.supply, 3900); assert.equal(multi.coverageGap, -1890); assert.equal(multi.firstShortage, null);
   assert.equal(multi.targets[0].monthly.length, 6);
@@ -90,7 +91,8 @@ test('cross stops at the first different industry; forecasts beyond the boundary
   const missingAncestor = new Engine(data);
   assert.equal(Summary.view(missingAncestor, q.month, 'cross', 'forecast').byCode.get('C').demand, 340);
   data.tables.forecast = data.tables.forecast.filter(r => r.code !== 'B1');
-  const unknown = new Engine(data); assert.equal(Summary.view(unknown, q.month, 'cross', 'forecast').byCode.get('C').demand, null);
+  const unknown = new Engine(data); assert.equal(Summary.view(unknown, q.month, 'cross', 'forecast').byCode.get('C').demand, 12100);
+  assert.deepEqual(Summary.relations(unknown, 'C', 'cross', q.month).map(r => [r.code, r.coeff]).sort(), [['B2', 5], ['U', 12]]);
 });
 
 test('cross multiplies same-industry paths and sums convergent coefficients only up to the first boundary', () => {
@@ -191,15 +193,15 @@ test('individual months include inventory only in the selected first month; cumu
   for (const periodMode of ['individual', 'cumulative']) assert.throws(() => s.list({ ...q, span: 7, periodMode }, 'test'), /超出范围/);
 }));
 
-test('calendar months are never skipped; covered months without records count as zero and year ranges are explicit', () => serviceTest(s => {
+test('calendar months are never skipped; missing cross forecasts remain unknown and year ranges are explicit', () => serviceTest(s => {
   const data = fixture(); data.tables.forecast = data.tables.forecast.filter(r => r.month !== '2026-10');
   s.publish(data, 1, 'test', 'test');
   const result = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'individual' }, 'test');
   assert.deepEqual(result.spanMonths, ['2026-09', '2026-10', '2026-11']);
-  // 2026-10 在版本覆盖范围内但无任何预测记录 → 按0计入而非未知
-  const rows = result.rows[0].periods; assert.equal(rows[1].complete, true); assert.equal(rows[1].supply, 0); assert.equal(rows[1].demand, 0); assert.equal(rows[1].gap, 0); assert.equal(rows[1].inventory, null); assert.equal(rows[1].inventoryIncluded, false); assert.equal(rows[2].complete, true);
+  // 供应可补0；cross来源记录缺失仍未知，不因版本覆盖就当作显式0。
+  const rows = result.rows[0].periods; assert.equal(rows[1].complete, false); assert.equal(rows[1].supply, 0); assert.equal(rows[1].demand, null); assert.equal(rows[1].gap, null); assert.equal(rows[1].inventory, null); assert.equal(rows[1].inventoryIncluded, false); assert.equal(rows[2].complete, true);
   const combined = s.list({ ...q, mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test').rows[0].periods[0];
-  assert.equal(combined.complete, true); assert.equal(combined.supply, 1300); assert.equal(combined.demand, 680); assert.equal(combined.coverageGap, -650);
+  assert.equal(combined.complete, false); assert.equal(combined.supply, 1300); assert.equal(combined.demand, null); assert.equal(combined.coverageGap, null);
   const crossYear = s.list({ ...q, month: '2026-12', mode: 'cross', span: 3, code: 'C', periodMode: 'cumulative' }, 'test');
   assert.equal(crossYear.periods[0].label, '2026年12月-2027年2月');
   // 版本未覆盖的月份（2027-03起）仍按数据不完整处理

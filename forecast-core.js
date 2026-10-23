@@ -145,12 +145,39 @@
     if (!rows.length && !errors.length) fail(offset + 1, '数据', '没有数据行，未执行清空');
     return { rows, errors };
   }
+  function bomTemplateScope(rows, onIssue) {
+    const templates = new Map();
+    for (const r of rows) for (const side of ['parent', 'child']) {
+      if (!templates.has(r[side])) templates.set(r[side], new Set());
+      templates.get(r[side]).add(text(r[side + '_template']));
+    }
+    const excludedCodes = new Set(); let conflicts = 0, missing = 0;
+    for (const [code, values] of templates) {
+      if (values.size > 1) conflicts++;
+      if (values.has('')) missing++;
+      // 缺失或冲突保留；只有全表一致且明确非AI的编码才排除。
+      if (values.size === 1 && !values.has('AI') && !values.has('')) excludedCodes.add(code);
+    }
+    const kept = [];
+    for (const r of rows) {
+      if (onIssue) for (const side of ['parent', 'child']) {
+        const code = r[side], field = side + '_template', values = templates.get(code);
+        const report = (message, action) => onIssue({ table: 'bom', severity: 'warning', ...(r._source || {}), code, parent: r.parent, child: r.child, field, value: r[field], message, action, raw: r });
+        if (!text(r[field])) report(`编码${code}的项目模板缺失`, '保留编码参与BOM关系计算，请补充模板');
+        if (values.size > 1) report(`编码${code}的项目模板不一致：${[...values].map(v => v || '未维护').sort().join('、')}`, '保留编码参与BOM关系计算，请核对父项模板和子项模板');
+        if (excludedCodes.has(code)) report(`编码${code}的项目模板为${text(r[field])}，不是AI`, '本行不参与BOM关系计算，原始BOM保留');
+      }
+      if (!excludedCodes.has(r.parent) && !excludedCodes.has(r.child)) kept.push(r);
+    }
+    return { rows: kept, excluded: rows.length - kept.length, conflicts, missing };
+  }
   function topology(tables) {
+    const bom = bomTemplateScope(tables.bom || []).rows;
     const codes = new Set(), parents = new Map(), children = new Map();
     for (const k of ['forecast', 'attributes', 'inventory', 'adjust', 'mo']) for (const r of tables[k] || []) if (r.code) codes.add(r.code);
-    for (const r of tables.bom || []) { codes.add(r.parent); codes.add(r.child); }
+    for (const r of bom) { codes.add(r.parent); codes.add(r.child); }
     for (const c of codes) { parents.set(c, []); children.set(c, []); }
-    for (const r of tables.bom || []) { parents.get(r.child).push(r); children.get(r.parent).push(r); }
+    for (const r of bom) { parents.get(r.child).push(r); children.get(r.parent).push(r); }
     const deg = new Map([...codes].map(c => [c, parents.get(c).length]));
     const order = [...codes].filter(c => !deg.get(c)), level = new Map(order.map(c => [c, 0]));
     for (let i = 0; i < order.length; i++) for (const r of children.get(order[i])) { level.set(r.child, Math.max(level.get(r.child) || 0, level.get(r.parent) + 1)); deg.set(r.child, deg.get(r.child) - 1); if (!deg.get(r.child)) order.push(r.child); }
@@ -166,6 +193,10 @@
   }
   function validate(snapshot) {
     const errors = [], warnings = [], t = snapshot.tables;
+    const templateScope = bomTemplateScope(t.bom);
+    if (templateScope.excluded) warnings.push(`BOM项目模板范围：${templateScope.excluded}行包含明确非AI编码，不参与关系计算，原始数据保留`);
+    if (templateScope.conflicts) warnings.push(`${templateScope.conflicts}个编码的BOM项目模板不一致，保留参与关系计算，请核对父项模板和子项模板`);
+    if (templateScope.missing) warnings.push(`${templateScope.missing}个编码的BOM项目模板缺失，保留参与关系计算`);
     const addError = (r, message) => errors.push({ ...(r._source || {}), field: '关联校验', message });
     for (const key of Object.keys(schemas)) {
       const seen = new Set();
@@ -255,7 +286,8 @@
     sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {
       if (!this.netCache.has(month)) { if (this.netCache.size >= 2) this.netCache.delete(this.netCache.keys().next().value); this.netCache.set(month, new Map()); }
-      const cache = this.netCache.get(month), key = JSON.stringify([code, month]); if (cache.has(code)) return cache.get(code);
+      const cache = this.netCache.get(month); if (cache.has(code)) return cache.get(code);
+      const key = JSON.stringify([code, month]);
       const rows = this.byCodeMonth.get(key) || [], adj = this.adjustments.get(key) || { add: 0, remove: 0 };
       const raw = rows.reduce((s, r) => s + r.qty, 0), known = rows.length > 0;
       const result = { raw, known, supply: known ? raw + adj.add : null, demand: known ? raw - adj.remove : null, ...adj, sites: siteSummary(rows, adj.add) };
@@ -287,70 +319,101 @@
       }
       const result = [...targets.values()]; if (this.relationCache.size > 256) this.relationCache.delete(this.relationCache.keys().next().value); this.relationCache.set(key, result); return result;
     }
-    // 单条 parent→child 边的有效需求：与 matrix 的传导规则完全一致。
-    // 有预测记录时按原口径取 parent 自身需求；无预测记录时取 parent 的上层累计需求（透传上溯）。
+    // 来源已由relations解析；缺失记录保持未知，direct父项例外按已知0。
     edgeDemand(parent, child, month, mode = 'cross') {
       const net = this.net(parent, month);
-      if (mode === 'direct') return { value: Math.abs(net.demand || 0), known: true };   // 直接父子永停父项；无预测按 0 计（已知）
-      const crossEdge = mode === 'cross' && !this.sameIndustry(parent, child);
-      const noParents = !this.graph.parents.get(parent).length;
-      const originate = mode === 'direct' || crossEdge || noParents;
-      if (originate && net.known) return { value: Math.abs(net.demand || 0), known: true };
-      const computed = this.compute(month, mode).get(parent), value = computed ? computed.knownDemand : 0;
-      // 版本覆盖该月但编码当月无预测记录时按 0 计入；仅当编码在本版本完全无预测记录且上游也无预测时才为未知
-      const zeroFill = (this.byCode.get(parent) || []).length > 0;
-      return { value, known: zeroFill || !!(computed && computed.demandKnown) };
+      return { value: Math.abs(net.demand || 0), known: mode === 'direct' || net.known };
     }
-    compute(month, mode = 'cross', source = 'forecast') {
-      const key = JSON.stringify([month, mode, source]); if (this.monthCache.has(key)) return this.monthCache.get(key);
-      const result = new Map(), incoming = new Map(), incomingKnown = new Map(), saved = this.materialized.get(key), numeric = saved || new Float64Array(this.graph.order.length * 2);
-      // O(V+E) per month. Never materialize the all-pairs BOM closure for aggregate analysis.
-      for (let index = 0; index < this.graph.order.length; index++) {
-        const code = this.graph.order[index];
-        const net = this.net(code, month), moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
-        const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((s, r) => s + r.qty, 0) : null, sites: siteSummary(moRows) } : net;
-        const completeAll = saved ? !!saved[index * 2 + 1] : own.supply != null && (incomingKnown.get(code) !== false), knownDemand = saved ? saved[index * 2] : incoming.get(code) || 0;
-        // 跨产业/最顶层允许「部分来源缺失」：仍有已知贡献时按已知部分计算，并打 partial 标记；全部未知仍为数据不完整。
-        // 透传节点（自身无预测记录）不参与部分计算，避免把供应未知误算成缺口
-        // 供应本身未知（如指令模式未导入表2，supply 为 null）时也不能按部分计算：否则 null 会被当成 0，凭空算出缺口
-        const passThroughCode = !net.known && this.graph.parents.get(code).length > 0 && knownDemand > 0;
-        const partial = mode !== 'direct' && !completeAll && own.supply != null && knownDemand > 0 && !passThroughCode;
-        const complete = completeAll || partial;
-        // 缺口把自身使用剔除计入需求侧：缺口 = 上层需求 + 使用剔除 − 净供应（等价于剔除先扣减自身可用量）
-        const demand = complete ? knownDemand : null, gap = complete && this.graph.parents.get(code).length ? demand + own.remove - own.supply : null;
-        if (!saved) { numeric[index * 2] = knownDemand; numeric[index * 2 + 1] = Number(complete); }
-        const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
-        if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
-        const periodSites = this.periodSiteCache.get(code);
-        const noParentsCode = !this.graph.parents.get(code).length, demandKnown = noParentsCode ? net.known : (net.known || knownDemand > 0), passThrough = !net.known && !noParentsCode && knownDemand > 0;
-        const attr = this.attributes.get(code) || {}, risks = [];
-        if (!complete && !passThrough) risks.push('预测或产业数据不完整');
-        if (partial) risks.push('部分来源数据缺失');
-        if (gap > EPS) risks.push('预测总量不足');
-        if (own.sites.single) risks.push('当月单一加工地');
-        if (own.sites.count > 1 && own.sites.maxShare >= this.cfg.concentration) risks.push('加工地高度集中');
-        if (own.sites.unassigned > EPS) risks.push('加工地未完整分配');
-        if (attr.lead_cv != null && attr.lead_cv >= this.cfg.cv_threshold) risks.push('加工周期波动');
-        if (attr.lead_mean == null) risks.push('加工周期未维护');
-        result.set(code, { code, attr, ...own, complete, demand, knownDemand, demandKnown, passThrough, partial, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 ? own.supply / demand : null, periodSites, risks });
-        if (saved) continue;
-        // 口径差异：跨产业/最顶层对无预测记录的上层继续上溯；直接父子永远停在直接父项，
-        // 父项无预测记录按 0 计（已知 0，不再标不完整、也不上溯）
-        const noParents = !this.graph.parents.get(code).length;
-        for (const edge of this.graph.children.get(code)) {
-          const crossEdge = mode === 'cross' && !this.sameIndustry(code, edge.child);
-          const originate = mode === 'direct' || crossEdge || noParents;
-          const hasOwn = net.known;
-          const outgoing = originate && (hasOwn || mode === 'direct') ? Math.abs(net.demand || 0) : knownDemand;
-          const outgoingKnown = hasOwn
-            ? (crossEdge ? this.dept(code) != null && this.dept(edge.child) != null : originate ? true : incomingKnown.get(code) !== false)
-            : (mode === 'direct' ? true : noParents ? false : incomingKnown.get(code) !== false);
-          const val = (incoming.get(edge.child) || 0) + outgoing * edge.qty;
-          if (!Number.isFinite(val)) throw Error('BOM累计需求超出计算范围'); incoming.set(edge.child, val);
-          if (!outgoingKnown) incomingKnown.set(edge.child, false);
+    refreshInventory() {
+      const day = today(); if (this.inventoryDay === day) return;
+      this.inventoryDay = day; let date = null;
+      for (const d of this.inventoryDates) if (d <= day && (!date || d > date)) date = d;
+      if (date !== this.inventorySnapshotDate) { this.inventorySnapshotDate = date; this.monthCache.clear(); }
+    }
+    matrix(month, mode = 'cross', source = 'forecast') {
+      const key = JSON.stringify([month, mode, source]);
+      if (this.materialized.has(key)) return this.materialized.get(key);
+      // 供应来源只影响行的供应量，不影响上游预测需求；两种供应模式共享需求矩阵。
+      const otherKey = JSON.stringify([month, mode, source === 'mo' ? 'forecast' : 'mo']);
+      if (this.materialized.has(otherKey)) { const saved = this.materialized.get(otherKey); this.materialized.set(key, saved); return saved; }
+      const count = this.graph.order.length, numeric = new Float64Array(count * 2);
+      // 按拓扑顺序压缩边表；产业传播的热循环只访问整数索引和数值数组。
+      if (!this.matrixGraph) {
+        const offsets = new Uint32Array(count + 1), roots = new Uint8Array(count), departments = new Uint32Array(count), deptIds = new Map();
+        for (let i = 0; i < count; i++) {
+          const code = this.graph.order[i], dept = this.dept(code);
+          if (!deptIds.has(dept)) deptIds.set(dept, deptIds.size);
+          departments[i] = deptIds.get(dept); roots[i] = Number(!this.graph.parents.get(code).length);
+          offsets[i + 1] = offsets[i] + this.graph.children.get(code).length;
+        }
+        const children = new Uint32Array(offsets[count]), quantities = new Float64Array(offsets[count]);
+        for (let i = 0; i < count; i++) {
+          let j = offsets[i];
+          for (const edge of this.graph.children.get(this.graph.order[i])) { children[j] = this.orderIndex.get(edge.child); quantities[j++] = edge.qty; }
+        }
+        this.matrixGraph = { offsets, roots, departments, children, quantities, deptCount: deptIds.size };
+      }
+      const { offsets, roots, departments, children, quantities, deptCount } = this.matrixGraph;
+      const ownDemand = new Float64Array(count), hasForecast = new Uint8Array(count);
+      for (let i = 0; i < count; i++) { const net = this.net(this.graph.order[i], month); ownDemand[i] = Math.abs(net.demand || 0); hasForecast[i] = Number(net.known); }
+      // 偶数位为已知需求合计；奇数位bit0=有已知来源、bit1=有未知来源。
+      // cross按目标产业分别传播，避免跳过无预测边界后返回原产业时改变口径。
+      const cross = mode === 'cross', direct = mode === 'direct';
+      const amounts = new Float64Array(count), flags = new Uint8Array(count);
+      for (let dept = 0; dept < (cross ? deptCount : 1); dept++) {
+        amounts.fill(0); flags.fill(0);
+        for (let i = 0; i < count; i++) {
+          const root = roots[i];
+          if (root) flags[i] = 1;
+          if (!cross || departments[i] === dept) { numeric[i * 2] = amounts[i]; numeric[i * 2 + 1] = flags[i]; }
+          const originate = direct || root || (cross && departments[i] !== dept);
+          const own = originate && (hasForecast[i] || direct);
+          const value = own ? ownDemand[i] : root ? 0 : amounts[i];
+          const known = own ? 1 : root ? 2 : flags[i];
+          for (let edge = offsets[i]; edge < offsets[i + 1]; edge++) {
+            const j = children[edge], total = amounts[j] + value * quantities[edge];
+            if (!Number.isFinite(total)) throw Error('BOM累计需求超出计算范围');
+            amounts[j] = total; flags[j] |= known;
+          }
         }
       }
-      this.materialized.set(key, numeric);
+      this.materialized.set(key, numeric); return numeric;
+    }
+    row(code, month, mode = 'cross', source = 'forecast') {
+      this.refreshInventory();
+      const index = this.orderIndex.get(code); if (index == null) return undefined;
+      const key = JSON.stringify([month, mode, source]), cached = this.monthCache.get(key);
+      if (cached) return cached.get(code);
+      const numeric = this.matrix(month, mode, source), net = this.net(code, month);
+      const knownDemand = numeric[index * 2], flags = numeric[index * 2 + 1];
+      const hasParents = this.graph.parents.get(code).length > 0;
+      const passThrough = !net.known && hasParents && knownDemand > EPS;
+      const zeroFilled = source === 'forecast' && !net.known && !passThrough && this.months.includes(month);
+      const moRows = this.moByCodeMonth.get(JSON.stringify([code, month])) || [];
+      const own = source === 'mo' ? { ...net, supply: this.t.mo.length ? moRows.reduce((sum, r) => sum + r.qty, 0) : null, sites: siteSummary(moRows) } : zeroFilled ? { ...net, supply: net.add } : net;
+      const demandKnown = !(flags & 2) || !!(flags & 1);
+      const complete = own.supply != null && demandKnown && !passThrough;
+      const partial = mode !== 'direct' && !!(flags & 2) && !!(flags & 1) && complete;
+      const demand = demandKnown && (source !== 'mo' || own.supply != null) ? knownDemand : null;
+      const gap = complete && hasParents ? demand + own.remove - own.supply : null;
+      const snapshotDate = this.inventorySnapshotDate, inventory = snapshotDate ? this.inventory.get(JSON.stringify([code, snapshotDate])) || 0 : null;
+      if (!this.periodSiteCache.has(code)) this.periodSiteCache.set(code, siteSummary(this.byCode.get(code) || [], this.periodAdds.get(code) || 0));
+      const attr = this.attributes.get(code) || {}, risks = [];
+      if (!complete && !passThrough) risks.push('预测或产业数据不完整');
+      if (partial) risks.push('部分来源数据缺失');
+      if (gap > EPS) risks.push('预测总量不足');
+      if (own.sites.single) risks.push('当月单一加工地');
+      if (own.sites.count > 1 && own.sites.maxShare >= this.cfg.concentration) risks.push('加工地高度集中');
+      if (own.sites.unassigned > EPS) risks.push('加工地未完整分配');
+      if (attr.lead_cv != null && attr.lead_cv >= this.cfg.cv_threshold) risks.push('加工周期波动');
+      if (attr.lead_mean == null) risks.push('加工周期未维护');
+      return { code, attr, ...own, zeroFilled, complete, demand, knownDemand, demandKnown, passThrough, partial, gap, inventory, snapshotDate, coverageGap: gap != null && inventory != null ? gap - inventory : null, coverage: demand > 0 && own.supply != null ? own.supply / demand : null, periodSites: this.periodSiteCache.get(code), risks };
+    }
+    compute(month, mode = 'cross', source = 'forecast') {
+      this.refreshInventory();
+      const key = JSON.stringify([month, mode, source]); if (this.monthCache.has(key)) return this.monthCache.get(key);
+      const result = new Map();
+      for (const code of this.graph.order) result.set(code, this.row(code, month, mode, source));
       if (this.monthCache.size >= 2) this.monthCache.delete(this.monthCache.keys().next().value);
       this.monthCache.set(key, result); return result;
     }
@@ -396,7 +459,7 @@
   function sample() {
     const s = empty(), m = today().slice(0, 7), t = s.tables; s.kind = 'sample'; s.updated_at = new Date().toISOString();
     t.attributes = [ ['A', '共用模块', '基础制造部', 10, .4], ['B', '整机B', '整机事业部', 8, .12], ['C', '整机C', '整机事业部', 6, .15], ['D', '模块原料', '基础制造部', 15, .08] ].map(([code, name, make_dept, lead_mean, lead_cv]) => ({ code, name, make_dept, lead_mean, lead_cv, sample_count: 30, source: '示例维护' }));
-    t.bom = [{ id: '1', parent: 'B', child: 'A', qty: 2, parent_template: '成品模板', child_template: '半成品模板' }, { id: '2', parent: 'C', child: 'A', qty: 1, parent_template: '成品模板', child_template: '半成品模板' }, { id: '3', parent: 'A', child: 'D', qty: .5, parent_template: '半成品模板', child_template: '原材料模板' }];
+    t.bom = [{ id: '1', parent: 'B', child: 'A', qty: 2, parent_template: 'AI', child_template: 'AI' }, { id: '2', parent: 'C', child: 'A', qty: 1, parent_template: 'AI', child_template: 'AI' }, { id: '3', parent: 'A', child: 'D', qty: .5, parent_template: 'AI', child_template: 'AI' }];
     for (let i = 0; i < 11; i++) {
       const month = addMonth(m, i);
       for (const [code, qty, site_code, site_name] of [['A', 1000, i % 2 ? 'S2' : 'S1', i % 2 ? '乙加工地' : '甲加工地'], ['B', 400, 'S3', '整机加工地'], ['C', 300, 'S3', '整机加工地'], ['D', 520, 'S4', '原料加工地甲'], ['D', 30, 'S5', '原料加工地乙']]) t.forecast.push({ plan_date: today(), code, month, origin_month: m, qty, site_code, site_name, supplier_code: 'V-' + site_code, supplier_name: '供应商-' + site_code, type: code === 'B' || code === 'C' ? '成品' : '半成品' });
@@ -441,7 +504,7 @@
     const need = {}, factor = {};
     for (const c of all) { need[c] = new Array(N).fill(0); factor[c] = 0.94 + rnd() * 0.18; }
     let bid = 0;
-    const bom = (parent, child, qty) => { bid++; t.bom.push({ id: String(bid), parent, child, qty }); };
+    const bom = (parent, child, qty) => { bid++; t.bom.push({ id: String(bid), parent, child, qty, parent_template: 'AI', child_template: 'AI' }); };
     const pushF = (c, mm, qty, site_code, site_name) => { const g = c.slice(0, 2); t.forecast.push({ plan_date: v, code: c, month: mm, origin_month: m, qty, site_code, site_name, supplier_code: site_code ? 'V-' + site_code : '', supplier_name: site_code ? '供应商-' + site_code : '', type: NM[g] }); };
     const rounds = (x) => Math.round(x);
     // 加工地形态：5% 单一、10% 高度集中、5% 未完整分配、约13% 三地共线、其余双地分流
@@ -514,5 +577,5 @@
     return { range: range.size, skipped: false, before, after: { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length } };
   }
 
-  return { schemas, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, scopeTables, EPS };
+  return { schemas, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, bomTemplateScope, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, scopeTables, EPS };
 });

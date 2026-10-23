@@ -47,8 +47,7 @@ function demo() {
   // 结果是大量编码 minLevel ≠ maxLevel，真实体现"同一编码跨多层归属"
   let bid = 0;
   // 表3父项/子项模板：按编码所属层给出类型（整机/模组/部件/结构件/基础料/深基础料/原料模板），网络图类型染色以此为据
-  const tpl = c => NM[c.split('-')[0]] + '模板';
-  const bom = (parent, child, qty) => { bid++; t.bom.push({ id: 'BOM-' + String(bid).padStart(4, '0'), parent, child, qty, parent_template: tpl(parent), child_template: tpl(child) }); };
+  const bom = (parent, child, qty) => { bid++; t.bom.push({ id: 'BOM-' + String(bid).padStart(4, '0'), parent, child, qty, parent_template: 'AI', child_template: 'AI' }); };
   const hotPool = P => P.slice(0, Math.max(2, Math.floor(P.length * 0.2)));
   const parentsOf = {};
   for (let li = 1; li < LEVEL.length; li++) {
@@ -143,7 +142,7 @@ function templateSample() {
     t.mo.push({ mo_no: 'MO-00' + (i + 1), code, qty, due_date: month + '-25', sched_date: month + '-24', site_code, site_name, status: '已排产' });
     t.adjust.push({ code, purchase_code: i === 1 ? '' : 'BUY-00' + (i + 1), direction: i === 1 ? '使用' : '供应', month, qty: [10, 20, 30][i] });
   }
-  t.bom.push({ id: 'BOM-001', parent: codes[0], child: codes[1], qty: 2 }, { id: 'BOM-002', parent: codes[0], child: codes[2], qty: 1 }, { id: 'BOM-003', parent: codes[1], child: codes[2], qty: 3 });
+  t.bom.push({ id: 'BOM-001', parent: codes[0], child: codes[1], qty: 2, parent_template: 'AI', child_template: 'AI' }, { id: 'BOM-002', parent: codes[0], child: codes[2], qty: 1, parent_template: 'AI', child_template: 'AI' }, { id: 'BOM-003', parent: codes[1], child: codes[2], qty: 3, parent_template: 'AI', child_template: 'AI' });
   return s;
 }
 module.exports = { demo, templateSample };

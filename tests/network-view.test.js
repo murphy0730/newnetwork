@@ -58,7 +58,7 @@ test('graph nodes carry the 表3 parent/child template for type coloring', () =>
     s.publish(data, 0, 'test', 'test');
     const g = s.graph({ month: data.tables.forecast[0].month, mode: 'direct', limit: 1 }, 'test');
     const type = Object.fromEntries(g.nodes.map(n => [n.code, n.template]));
-    assert.equal(type.B, '成品模板'); assert.equal(type.C, '成品模板');
-    assert.equal(type.A, '半成品模板'); assert.equal(type.D, '原材料模板');
+    assert.equal(type.B, 'AI'); assert.equal(type.C, 'AI');
+    assert.equal(type.A, 'AI'); assert.equal(type.D, 'AI');
   } finally { s.store.close(); }
 });

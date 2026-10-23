@@ -23,94 +23,50 @@ function sortSuppliers(rows, engine) {
     || a.code.localeCompare(b.code));
 }
 
-function replaceDemand(row, demand, applicable, known) {
-  const complete = row.supply != null && known;
-  // 使用剔除计入自身需求侧：缺口 = 上层需求 + 使用剔除 − 净供应
-  const gap = !applicable ? 0 : complete ? demand + (row.remove || 0) - row.supply : null;
-  const risks = row.risks.filter(r => r !== '预测总量不足' && r !== '预测或产业数据不完整');
-  if (!complete) risks.unshift('预测或产业数据不完整');
-  if (gap > C.EPS) risks.unshift('预测总量不足');
-  return { ...row, applicable, demand: applicable && known ? demand : null, complete, gap, coverageGap: !applicable ? 0 : gap != null && row.inventory != null ? gap - row.inventory : null, risks };
-}
-
-// Propagate demand through the supplier's industry; crossing an industry boundary
-// starts from that immediate parent's own net forecast. O(V+E) per month.
 function view(engine, month, mode, source) {
+  engine.refreshInventory();
   let views = cache.get(engine); if (!views) cache.set(engine, views = new Map());
-  const key = JSON.stringify([month, mode, source]);
+  const key = JSON.stringify([month, mode, source, engine.inventorySnapshotDate]);
   if (views.has(key)) return Query.lru(views, key, views.get(key), 2);
-  const input = Query.view(engine, month, mode === 'cross' ? 'direct' : mode, source);
-  let byCode;
-  if (mode === 'cross') {
-    const external = new Map(); byCode = new Map();
-    for (const code of engine.graph.order) {
-      const parents = engine.graph.parents.get(code);
-      const cross = { amount: 0, known: true, applicable: false };
-      for (const edge of parents) {
-        const sameDept = engine.sameIndustry(edge.parent, code);
-        const net = sameDept ? null : engine.net(edge.parent, month);
-        const p = sameDept ? external.get(edge.parent) : { amount: Math.abs(net.demand || 0), known: net.known && engine.dept(edge.parent) != null, applicable: true };
-        cross.amount += p.amount * edge.qty;
-        cross.known &&= p.known && engine.dept(code) != null;
-        cross.applicable ||= !sameDept || p.applicable;
-      }
-      if (!Number.isFinite(cross.amount)) throw Error('BOM累计需求超出计算范围');
-      external.set(code, cross);
-    }
-    for (const row of input.rows) { const x = external.get(row.code); byCode.set(row.code, replaceDemand(row, x.amount, x.applicable, x.known)); }
-  } else {
-    const totals = new Map();
-    for (const code of engine.graph.order) {
-      const total = { amount: 0, known: true };
-      for (const edge of engine.graph.parents.get(code)) {
-        const net = engine.net(edge.parent, month);
-        const p = mode === 'direct' || !engine.graph.parents.get(edge.parent).length ? { amount: Math.abs(net.demand || 0), known: net.known } : totals.get(edge.parent);
-        total.amount += p.amount * edge.qty; total.known &&= p.known;
-      }
-      if (!Number.isFinite(total.amount)) throw Error('BOM累计需求超出计算范围');
-      totals.set(code, total);
-    }
-    byCode = new Map(input.rows.map(r => { const x = totals.get(r.code); return [r.code, replaceDemand(r, x.amount, !!engine.graph.parents.get(r.code).length, x.known)]; }));
-  }
-  const rows = sortSuppliers([...byCode.values()], engine);
+  const input = Query.view(engine, month, mode, source);
+  const rows = sortSuppliers(input.rows.map(row => {
+    const applicable = engine.graph.parents.get(row.code).length > 0;
+    return { ...row, applicable, demand: applicable ? row.demand : null, gap: applicable ? row.gap : 0, coverageGap: applicable ? row.coverageGap : 0 };
+  }), engine);
+  const byCode = new Map(rows.map(r => [r.code, r]));
   return Query.lru(views, key, { rows, byCode, filters: new Map(), dashboard: Query.summarize(rows, engine) }, 2);
 }
 
-// Relations are materialized only for the requested page, never an all-pairs BOM closure.
 function relations(engine, code, mode, month) {
-  const result = engine.relations(code, mode, month, true);   // 无预测记录的中间节点不停止，继续上溯
-  if (mode !== 'cross') return result;
-  // Reuse the graph/insights frontier, stopping at the first different make_dept.
-  // A same-industry root is not a cross-industry demand source for this table.
-  return result.filter(link => link.kind !== '本产业最顶层');
+  return engine.relations(code, mode, month, true);
 }
 
 function decorate(engine, base, month, span, months, mode, source, periodMode = 'individual') {
-  const links = relations(engine, base.code, mode, month);
-  const monthSet = new Set(engine.months);
-  // 预测版本覆盖该月、但编码当月无预测记录时按0计入（供应添加/使用剔除仍生效）；版本未覆盖的月份保持数据不完整
-  const targets = links.map(link => ({ ...link, make_dept: engine.dept(link.code) || '',
-    monthly: months.map(m => { const net = engine.net(link.code, m); if (!monthSet.has(m)) return { month: m, forecast: null, remove: net.remove, netDemand: net.demand, demand: null };
-      const out = engine.edgeDemand(link.code, base.code, m, mode);
-      return { month: m, forecast: net.raw, remove: net.remove, netDemand: net.demand, demand: out.known ? out.value * link.coeff : null }; }) }));
+  const monthSet = new Set(engine.months), targetMap = new Map();
+  const linksByMonth = months.map(m => relations(engine, base.code, mode, m));
+  for (const links of linksByMonth) for (const link of links) if (!targetMap.has(link.code)) {
+    targetMap.set(link.code, { ...link, make_dept: engine.dept(link.code), monthly: [] });
+  }
+  const targets = [...targetMap.values()];
+  for (let i = 0; i < months.length; i++) {
+    const m = months[i], links = new Map(linksByMonth[i].map(link => [link.code, link]));
+    for (const target of targets) {
+      const link = links.get(target.code), net = engine.net(target.code, m);
+      const out = link ? engine.edgeDemand(target.code, base.code, m, mode) : null;
+      target.monthly.push({ month: m, active: !!link, coeff: link?.coeff || 0, forecast: net.raw, remove: net.remove, netDemand: net.demand, demand: !monthSet.has(m) ? null : !link ? 0 : out.known ? out.value * link.coeff : null });
+    }
+  }
+  for (const target of targets) {
+    const coeffs = new Set(target.monthly.filter(r => r.active).map(r => r.coeff));
+    target.coeff = coeffs.size === 1 ? coeffs.values().next().value : null;
+  }
   const applicable = targets.length > 0;
   const monthly = months.map((m, i) => {
-    let own = monthSet.has(m) ? engine.row(base.code, m, 'direct', source) : { known: false, raw: null, add: null, remove: null, supply: null, inventory: engine.inventorySnapshotDate ? engine.inventory.get(JSON.stringify([base.code, engine.inventorySnapshotDate])) || 0 : null, risks: [], sites: C.siteSummary([]) };
-    if (monthSet.has(m) && !own.known && !own.passThrough && source === 'forecast') own = { ...own, known: true, zeroFilled: true, raw: 0, supply: own.add || 0 };
-    const demandKnown = targets.every(t => t.kind !== '产业未确认' && t.monthly[i].demand != null);
-    // 跨产业/最顶层允许「部分来源缺失」：部分 target 有已知需求时按已知部分合计并打 partial 标记；全部未知仍为数据不完整
-    const anyKnown = targets.some(t => t.monthly[i].demand != null);
-    const partial = mode !== 'direct' && !demandKnown && anyKnown && !own.passThrough;
-    const demand = applicable && (demandKnown || partial) ? targets.reduce((sum, t) => sum + (t.monthly[i].demand || 0), 0) : null;
-    if (demand != null && !Number.isFinite(demand)) throw Error('BOM累计需求超出计算范围');
-    const complete = monthSet.has(m) && own.supply != null && (demandKnown || partial);
-    const gap = !applicable ? 0 : complete ? demand + (own.remove || 0) - own.supply : null;
+    const own = monthSet.has(m) ? engine.row(base.code, m, mode, source) : { known: false, raw: null, add: null, remove: null, supply: null, demand: null, gap: null, complete: false, inventory: engine.inventorySnapshotDate ? engine.inventory.get(JSON.stringify([base.code, engine.inventorySnapshotDate])) || 0 : null, risks: ['预测或产业数据不完整'], sites: C.siteSummary([]) };
     const inventoryIncluded = periodMode === 'cumulative' || i === 0;
-    const risks = own.risks.filter(r => r !== '预测总量不足' && r !== '预测或产业数据不完整');
-    if (!complete && !own.passThrough) risks.unshift('预测或产业数据不完整');
-    if (partial) risks.unshift('部分来源数据缺失');
-    if (gap > C.EPS) risks.unshift('预测总量不足');
-    return { month: m, raw: own.known ? own.raw : null, add: own.add, remove: own.remove, supply: own.supply, demand, gap, inventoryIncluded, inventory: inventoryIncluded ? own.inventory : null, coverageGap: !inventoryIncluded ? null : !applicable ? 0 : gap != null && own.inventory != null ? gap - own.inventory : null, complete, passThrough: own.passThrough, partial, risks, sites: own.sites.sites, siteCount: own.sites.count, maxShare: own.sites.maxShare, unassigned: own.sites.unassigned };
+    const monthApplicable = linksByMonth[i].length > 0;
+    const gap = monthApplicable ? own.gap : 0;
+    return { month: m, raw: own.known || own.zeroFilled ? own.raw : null, add: own.add, remove: own.remove, supply: own.supply, demand: monthApplicable ? own.demand : null, gap, inventoryIncluded, inventory: inventoryIncluded ? own.inventory : null, coverageGap: !inventoryIncluded ? null : !monthApplicable ? 0 : gap != null && own.inventory != null ? gap - own.inventory : null, complete: own.complete, passThrough: !!own.passThrough, partial: !!own.partial, risks: own.risks, sites: own.sites.sites, siteCount: own.sites.count, maxShare: own.sites.maxShare, unassigned: own.sites.unassigned };
   });
   const complete = months.length === span && monthly.every(r => r.complete);
   const sum = key => monthly.every(r => r[key] != null) && months.length === span ? monthly.reduce((s, r) => s + r[key], 0) : null;
@@ -126,7 +82,7 @@ function decorate(engine, base, month, span, months, mode, source, periodMode = 
   const risks = [...new Set(monthly.flatMap(r => r.risks))].filter(r => !['预测总量不足', '预测或产业数据不完整', '当月单一加工地', '加工地高度集中'].includes(r));
   if (periodSites.single) risks.push('期间单一加工地');
   if (periodSites.count > 1 && periodSites.maxShare >= engine.cfg.concentration) risks.push('加工地高度集中');
-  if (!complete) risks.unshift('预测或产业数据不完整');
+  if (!complete && !monthly.some(r => r.passThrough)) risks.unshift('预测或产业数据不完整');
   if (gap > C.EPS) risks.unshift('预测总量不足');
   for (const target of targets) target.demand = target.monthly.length === span && target.monthly.every(r => r.demand != null) ? target.monthly.reduce((s, r) => s + r.demand, 0) : null;
   const aggregate = { raw: sum('raw'), add: sum('add'), remove: sum('remove'), supply, demand, gap, inventory, coverageGap: !applicable ? 0 : gap != null && inventory != null ? gap - inventory : null, firstShortage, complete, passThrough: monthly.some(r => r.passThrough), partial: monthly.some(r => r.partial), risks, sites: periodSites.sites, siteCount: periodSites.count, maxShare: periodSites.maxShare };

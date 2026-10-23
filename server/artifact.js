@@ -20,7 +20,7 @@ function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], 
   progress({ phase: 'graph', message: '建立BOM图及周期路径', percent: 35 });
   const graph = C.topology(snapshot.tables), versions = [...new Set(snapshot.tables.forecast.map(r => r.plan_date))].sort();
   const counts = Object.fromEntries(Object.entries(snapshot.tables).map(([k, rows]) => [k, rows.length]));
-  const manifest = { format: FORMAT, algorithm, buildId: randomUUID(), builtAt: new Date().toISOString(), kind: snapshot.kind, config: snapshot.config, counts, versions, monthsByVersion: {}, statsByVersion: {}, codes: graph.codes.length, edges: snapshot.tables.bom.length, levels: maximumLevel(graph), warnings: validation.warnings, sources, summaries: [], sites: [], tableJsonCharacters: 0, maxChunkBytes: 0 };
+  const manifest = { format: FORMAT, algorithm, buildId: randomUUID(), builtAt: new Date().toISOString(), kind: snapshot.kind, config: snapshot.config, counts, versions, monthsByVersion: {}, statsByVersion: {}, codes: graph.codes.length, edges: [...graph.children.values()].reduce((sum, rows) => sum + rows.length, 0), levels: maximumLevel(graph), warnings: validation.warnings, sources, summaries: [], sites: [], tableJsonCharacters: 0, maxChunkBytes: 0 };
   const sites = new Map();
   for (const r of snapshot.tables.forecast) if (r.site_code || r.site_name) { const code = r.site_code || '名称:' + r.site_name; sites.set(code, { code, name: r.site_name || r.site_code }); }
   manifest.sites = [...sites.values()];
@@ -116,7 +116,7 @@ class Artifact {
     }
     if (codes.length !== this.manifest.codes || order.length !== codes.length) throw fail('产物图规模不符');
     const indices = new Map(order.map((code, i) => [code, i]));
-    for (const edge of snapshot.tables.bom) {
+    for (const edge of C.bomTemplateScope(snapshot.tables.bom).rows) {
       if (!parents.has(edge.child) || !children.has(edge.parent) || indices.get(edge.parent) >= indices.get(edge.child)) throw fail('产物BOM与拓扑序不一致');
       parents.get(edge.child).push(edge); children.get(edge.parent).push(edge);
     }
@@ -135,7 +135,7 @@ class Artifact {
       const raw = gunzipSync(part.payload);
       if (raw.length !== part.cells * 8) throw fail('产物计算矩阵尺寸不符');
       const values = new Float64Array(part.cells);
-      for (let i = 0; i < values.length; i++) { const value = raw.readDoubleLE(i * 8); if (!Number.isFinite(value) || (i % 2 && value !== 0 && value !== 1)) throw fail('产物计算矩阵数值无效'); values[i] = value; }
+      for (let i = 0; i < values.length; i++) { const value = raw.readDoubleLE(i * 8); if (!Number.isFinite(value) || (i % 2 && (!Number.isInteger(value) || value < 0 || value > 3))) throw fail('产物计算矩阵数值无效'); values[i] = value; }
       materialized.set(part.key, values);
     }
     for (const month of this.manifest.monthsByVersion[version] || []) for (const mode of ['direct', 'cross', 'top']) for (const source of ['forecast', 'mo']) if (!materialized.has(JSON.stringify([month, mode, source]))) throw fail('构建产物缺少预计算矩阵，请重新构建');

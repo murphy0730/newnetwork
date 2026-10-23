@@ -109,7 +109,7 @@ class Service {
     let version = scenario ? scenario.request.version : q.version;
     version ||= this.store.artifact(revision)?.manifest.versions.at(-1);
     const existing = this.engines.get(JSON.stringify([revision, version, q.scenario || '']));
-    if (existing) return existing;
+    if (existing) { existing.refreshInventory(); return existing; }
     let snap = this.state(revision);
     version ||= [...new Set(snap.tables.forecast.map(r => r.plan_date))].sort().at(-1);
     const key = JSON.stringify([snap.revision, version, q.scenario || '']);
@@ -169,7 +169,7 @@ class Service {
     if (!['individual', 'cumulative'].includes(periodMode)) throw error('月份计算方式无效');
     if (String(q.summary) === '1' && q.role === 'demand') throw error('供应汇总表暂不支持需求方视角，请切换为供应方');
     const { engine, month, mode, source, trace } = this.context(q, actor); if (!month) return { trace, rows: [], total: 0, dashboard: {}, months: [], spanMonths: [], periodMode, periods: [] };
-    if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'first-cross-industry-v2', periodMode });
+    if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'resolved-frontier-v3', periodMode });
     const span = int(q.span, 1, 1, 6), spanMonths = String(q.summary) === '1' ? Array.from({ length: span }, (_, i) => C.addMonth(month, i)) : engine.months.slice(engine.months.indexOf(month), engine.months.indexOf(month) + span);
     const indexed = String(q.summary) === '1' ? require('./supply-summary').view(engine, month, mode, source) : Query.view(engine, month, mode, source);
     let input = indexed.rows;
@@ -188,7 +188,7 @@ class Service {
     const dashboard = Query.summarize(dimensioned, engine);
     const rows = Query.filter(indexed, q, engine, input);
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
-    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1', periodMode)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖月份内无预测记录按0计入；KPI卡片与筛选仍按起始月口径。` : '') };
+    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1', periodMode)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖内无自身预测且非透传时供应按0计入；cross/top缺失来源保持未知；KPI卡片与筛选仍按起始月口径。` : '') };
   }
   // 汇总表行：单月直接输出；多月（最多6个月）按累计供需 + 库存滚动水位聚合，并识别跨产业首个编码及其产业
   summaryRow(engine, r, month, span, spanMonths, mode, source, summary = false, periodMode = 'individual') {
