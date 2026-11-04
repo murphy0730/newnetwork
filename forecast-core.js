@@ -30,7 +30,7 @@
       lead_cv: field('周期变异系数', ['加工周期变异系数', 'cv'], 'optionalNumber'), sample_count: field('周期样本量', ['样本量'], 'optionalNumber'),
       sample_start: field('统计开始日期', [], 'optionalDate'), sample_end: field('统计结束日期', [], 'optionalDate'), source: field('周期来源'),
       org_id: field('org_id', ['组织ID']), life_cycle_state: field('life_cycle_state'), part_category: field('part_category', ['产品大类']),
-      part_subcategory: field('part_subcategory'), part_series: field('part_series'), product_line: field('product_line'), product_family: field('product_family')
+      part_subcategory: field('part_subcategory', ['产品小类']), make_obj_package1: field('make_obj_package1', ['加工对象包']), part_series: field('part_series'), product_line: field('product_line'), product_family: field('product_family')
     } },
     adjust: { label: '表2 · 供应添加 / 使用剔除', required: ['direction', 'code', 'purchase_code'], fields: {
       direction: field('供应/使用', ['供应／使用']), code: field('项目编码'), purchase_code: field('外购编码'), month: field('月份', [], 'month'), qty: field('数量', [], 'number')

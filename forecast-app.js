@@ -10,7 +10,7 @@
   const opt = (value, label, selected) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(label)}</option>`;
   const select = (id, label, values, value) => `<label>${label}<select id="${id}">${values.map(([v, l]) => opt(v, l, value)).join('')}</select></label>`;
   const table = (heads, rows, empty = '暂无数据') => `<div class="fc-tablewrap"><table class="fc-table"><thead><tr>${heads.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${heads.length}" class="fc-muted">${empty}</td></tr>`}</tbody></table></div>`;
-  const state = { tab: 'overview', view: 'graph', version: '', month: '', mode: 'direct', source: 'forecast', role: 'supply', code: '', search: '', risk: '', site: [], codes: [], industry: '', category: '', layout: 'layered', layoutPicked: false, lod: 'L0', mapNav: null, cluster: 'none', colorBy: 'level', depth: 3, highlight: '', span: 3, tableSpan: 1, tablePeriodMode: 'individual', hideEmptySources: false, offset: 0, scenario: '', graphRelations: 'scope', filterOpen: true, edgeOpacity: 0.8, edgeDirection: 'top-down', ratioStyle: 'times', showKpi: true, showRatio: null, hideIsolated: null, showZero: true, persona: 'planner' };
+  const state = { tab: 'overview', view: 'graph', version: '', month: '', mode: 'direct', source: 'forecast', role: 'supply', code: '', search: '', risk: '', site: [], codes: [], industry: '', category: '', sourceIndustry: '', layout: 'layered', layoutPicked: false, lod: 'L0', mapNav: null, cluster: 'none', colorBy: 'level', depth: 3, highlight: '', span: 3, tableSpan: 1, tablePeriodMode: 'individual', hideEmptySources: false, offset: 0, scenario: '', graphRelations: 'scope', filterOpen: true, edgeOpacity: 0.8, edgeDirection: 'top-down', ratioStyle: 'times', showKpi: true, showRatio: null, hideIsolated: null, showZero: true, persona: 'planner' };
   // 布局：force 力导向 / layered 分层（经典渲染器） / map 地图（LOD 渲染器 ForecastGraphMap）。
   // 未手动选过布局且节点超阈值时自动进地图模式防止卡死；手动选择后本会话不再自动切换。
   const MAP_AUTO_THRESHOLD = 800;
@@ -39,8 +39,21 @@
   function trace(t) { return `<div class="fc-trace">数据 v${t.revision} · 预测 ${esc(t.version)} · ${esc(t.month)} · ${esc(modes.find(x => x[0] === t.mode)?.[1])} · ${t.source === 'mo' ? '库存＋未完工指令' : '库存＋预测'}${t.scenario ? ' · 独立推演 ' + esc(t.scenario.slice(0, 8)) : ' · 基线'}</div>`; }
   function modal(title, html, buttons = []) {
     const d = $('modal'); if (d.open) d.close();
+    d.classList.remove('fc-search-miss'); d.setAttribute('aria-label', title);
     d.innerHTML = `<div class="fc-row"><strong class="fc-title">${esc(title)}</strong><span class="spacer"></span><button class="btn ghost" id="modal-close" aria-label="关闭对话框">关闭</button></div><div class="fc-modal-body">${html}</div><div class="fc-actions">${buttons.map((b, i) => `<button class="btn ${b.primary ? 'primary' : 'ghost'}" id="modal-btn-${i}">${esc(b.label)}</button>`).join('')}</div>`;
     $('modal-close').onclick = () => d.close(); buttons.forEach((b, i) => $('modal-btn-' + i).onclick = async () => { const el = $('modal-btn-' + i); el.disabled = true; try { await b.run(); } catch (e) { showError(e); } finally { if (el.isConnected) el.disabled = false; } }); d.showModal();
+  }
+  function showSearchMiss(term, input) {
+    modal('搜索不到编码', `<p>未找到与“${esc(term)}”匹配的编码，请检查后重新搜索。</p>`);
+    const d = $('modal'); d.classList.add('fc-search-miss');
+    $('modal-close').textContent = '×'; $('modal-close').title = '关闭提示';
+    d.addEventListener('close', () => { if (!d.open && input?.isConnected) input.focus(); }, { once: true });
+  }
+  async function hasSearchMatch(code, search = '') {
+    try {
+      const result = await api('/api/analysis?' + query({ code, search: code ? '' : search, role: 'supply', limit: 1 }));
+      return result.total > 0;
+    } catch (e) { if (e.status === 404 && e.message === '编码不存在') return false; throw e; }
   }
   function issueLinks(issues, jobId) {
     if (!issues?.total || !jobId) return '';
@@ -75,7 +88,14 @@
     return `<div class="fc-controls">${select('sc-version', '预测版本', meta.versions.map(x => [x, x]), state.version)}${select('sc-month', '产出月份', months.map(x => [x, x]), state.month)}${select('sc-mode', '关系范围', modes, state.mode)}${select('sc-source', '供给来源', [['forecast', '库存＋净预测（长期）'], ['mo', '库存＋未完工指令（月度）']], state.source)}${state.scenario ? '<button class="btn danger" id="exit-scenario">返回基线</button>' : ''}</div>`;
   }
   function bindControls() { for (const [id, key] of [['sc-version', 'version'], ['sc-month', 'month'], ['sc-mode', 'mode'], ['sc-source', 'source']]) if ($(id)) $(id).onchange = () => { state[key] = $(id).value; state.offset = 0; if (key === 'version') { state.month = ''; state.scenario = ''; } if (key === 'mode') state.highlight = ''; render(); }; if ($('exit-scenario')) $('exit-scenario').onclick = () => { state.scenario = ''; render(); }; }
-  function bindCodes(container = $('workspace')) { container.querySelectorAll('[data-code]').forEach(el => el.onclick = () => { state.code = el.dataset.code; state.tab = 'overview'; state.offset = 0; pendingChain = el.dataset.code; if (state.view === 'table') state.view = 'graph'; render(); }); }
+  function bindCodes(container = $('workspace')) { container.querySelectorAll('[data-code]').forEach(el => el.onclick = async () => {
+    const id = renderId; el.disabled = true;
+    try {
+      const found = await hasSearchMatch(el.dataset.code); if (id !== renderId) return;
+      if (!found) return showSearchMiss(el.dataset.code, el);
+      state.code = el.dataset.code; state.tab = 'overview'; state.offset = 0; pendingChain = el.dataset.code; if (state.view === 'table') state.view = 'graph'; await render();
+    } catch (e) { if (id === renderId) showError(e); } finally { el.disabled = false; }
+  }); }
   async function render() {
     const id = ++renderId; if (gGraphMap && gGraph?.navState) state.mapNav = gGraph.navState(); gGraph?.destroy(); gGraph = null; heatChart?.dispose(); heatChart = null; reportCharts.forEach(c => c.dispose()); reportCharts = [];
     document.querySelectorAll('[data-tab]').forEach(el => { el.classList.toggle('active', el.dataset.tab === state.tab); el.setAttribute('aria-current', el.dataset.tab === state.tab ? 'page' : 'false'); });
@@ -152,7 +172,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
   function updateSeg(container, active) { container.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === active)); }
   async function renderOverview(id) {
     if (state.view === 'table') state.role = 'supply';
-    const extra = { summary: state.view === 'table' ? 1 : '', role: state.role, code: state.view === 'table' || state.role === 'demand' ? state.code : '', search: state.search, codes: state.codes, risk: state.risk, site: state.site, industry: state.industry, category: state.category, offset: state.view === 'table' ? state.offset : 0, limit: state.view === 'table' ? 20 : 100, span: state.view === 'table' ? state.tableSpan : '', periodMode: state.view === 'table' ? state.tablePeriodMode : '', linked: '' };
+    const extra = { summary: state.view === 'table' ? 1 : '', role: state.role, code: state.view === 'table' || state.role === 'demand' ? state.code : '', search: state.search, codes: state.codes, risk: state.risk, site: state.site, industry: state.industry, category: state.category, sourceIndustry: state.view === 'table' ? state.sourceIndustry : '', offset: state.view === 'table' ? state.offset : 0, limit: state.view === 'table' ? 20 : 100, span: state.view === 'table' ? state.tableSpan : '', periodMode: state.view === 'table' ? state.tablePeriodMode : '', linked: '' };
     const result = await api('/api/analysis?' + query(extra)); if (id !== renderId) return;
     state.month = result.trace.month; state.version = result.trace.version; lastRows = result.rows;
     const k = result.dashboard, months = result.months; $('tb-high').textContent = fmt(k.shortage); $('nav-risk-count').textContent = fmt(k.shortage);
@@ -204,11 +224,20 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     }
     $('btn-filters-close').onclick = $('btn-filters-open').onclick = () => { state.filterOpen = !state.filterOpen; $('ov-root').classList.toggle('f-off', !state.filterOpen); };
     $('btn-detail-close').onclick = () => { state.code = ''; state.offset = 0; if (state.view === 'table') render(); else $('ov-root').classList.add('d-off'); };
-    $('apply').onclick = () => { state.role = $('sc-role').value; state.code = $('sc-code').value.trim(); state.search = state.codes.length ? '' : $('sc-search').value.trim(); state.risk = $('sc-risk').value; state.industry = $('sc-industry').value; state.category = $('sc-category').value; state.offset = 0; render(); };
+    $('apply').onclick = async () => {
+      const button = $('apply'), code = $('sc-code').value.trim(), search = state.codes.length ? '' : $('sc-search').value.trim(); button.disabled = true;
+      try {
+        if (code || search) {
+          const found = await hasSearchMatch(code, search); if (id !== renderId) return;
+          if (!found) return showSearchMiss(code || search, code ? $('sc-code') : $('sc-search'));
+        }
+        state.role = $('sc-role').value; state.code = code; state.search = search; state.risk = $('sc-risk').value; state.industry = $('sc-industry').value; state.category = $('sc-category').value; state.offset = 0; await render();
+      } catch (e) { if (id === renderId) showError(e); } finally { button.disabled = false; }
+    };
     // 下拉类筛选即选即刷新，与版本/月份等控件行为一致；文本输入仍由「应用筛选」触发
     for (const [id, key] of [['sc-role', 'role'], ['sc-risk', 'risk'], ['sc-industry', 'industry'], ['sc-category', 'category']]) $(id).onchange = () => { state[key] = $(id).value; state.offset = 0; render(); };
     for (const el of [$('sc-code'), $('sc-search')]) el.onkeydown = e => { if (e.key === 'Enter') $('apply').click(); };
-    $('clear').onclick = () => { Object.assign(state, { code: '', search: '', codes: [], site: [], risk: '', industry: '', category: '', offset: 0, role: 'supply', highlight: '' }); render(); };
+    $('clear').onclick = () => { Object.assign(state, { code: '', search: '', codes: [], site: [], risk: '', industry: '', category: '', sourceIndustry: '', offset: 0, role: 'supply', highlight: '' }); render(); };
     bindMultiFilters(id);
     if (state.view === 'graph') await drawGraphRequest(id);
     else renderSummaryTable(result, extra);
@@ -217,10 +246,14 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
   // 汇总表行状态：与洞察 status 同语义，从行数据推导
   const rowStatus = r => r.passThrough ? ['透传', 'is-unknown'] : !r.complete ? ['数据不完整', 'is-unknown'] : r.partial ? ['部分缺失', 'is-attention'] : (r.gap || 0) > C.EPS || (r.coverageGap || 0) > C.EPS ? ['存在风险', 'is-risk'] : r.risks.length ? ['需要关注', 'is-attention'] : ['未见缺口', 'is-ok'];
   const sourceCoeff = target => target?.coeff != null ? fmt(target.coeff) : (target?.monthly || []).filter(r => r.active).map(r => r.month + '：' + fmt(r.coeff)).join('；') || '—';
+  const expandedSuppliers = new Set(); let summaryExpansionKey = '';
   function renderSummaryTable(result, extra) {
     const pageSize = extra.limit, total = result.total;
     const months = result.spanMonths && result.spanMonths.length ? result.spanMonths : [result.trace.month];
     const cumulative = result.periodMode === 'cumulative', groups = result.periods;
+    const foldable = result.trace.mode === 'cross' || result.trace.mode === 'top';
+    const expansionKey = JSON.stringify([result.trace.revision, result.trace.version, result.trace.month, result.trace.mode, result.trace.source, result.trace.scenario, months, result.periodMode]);
+    if (expansionKey !== summaryExpansionKey) { expandedSuppliers.clear(); summaryExpansionKey = expansionKey; }
     if (!$('tbl-hide-empty')) {
       const actions = document.createElement('span'); actions.className = 'fc-row';
       $('export-table').before(actions); actions.append($('export-table'));
@@ -240,25 +273,38 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
     const demandLabel = { direct: '上层总需求', cross: '跨产业总需求', top: '最顶层总需求' }[result.trace.mode];
     const siteCell = r => r.siteCount + '处 / ' + pct(r.maxShare);
     const riskCell = r => '<span class="wrap">' + (r.risks.map(x => pill(x, x.includes('不足') ? 'danger' : 'warn')).join('') || '—') + '</span>';
-    const leadHeads = ['编码', '名称', '产业部门', '产品大类', relationLabel, '来源产业', '累计BOM用量'];
+    const leadHeads = ['编码', '产业部门', '产品大类', '产品小类', '加工对象包', relationLabel, '来源产业', '累计BOM用量'];
+    const industries = [...new Set([...(result.sourceIndustries || []), ...(state.sourceIndustry ? [state.sourceIndustry] : [])])];
+    const industryFilter = '<select id="tbl-source-industry" class="fc-source-industry" aria-label="来源产业筛选" title="按来源产业筛选明细；供需合计保留全部来源">' + opt('', '全部来源产业', state.sourceIndustry) + industries.map(value => opt(value, value, state.sourceIndustry)).join('') + '</select>';
     const numberHeads = g => ['表1预测', '供应添加', '使用剔除', '净供应', '来源折算需求', demandLabel, '供需结余', ...(g.inventoryIncluded ? ['最新库存', '库存后结余'] : []), '状态', '加工地', '风险标签', ...(cumulative ? ['首次累计缺口月'] : [])];
-    const head = '<thead><tr>' + leadHeads.map(h => '<th rowspan="2">' + h + '</th>').join('') + groups.map(g => '<th colspan="' + numberHeads(g).length + '" data-period-start="' + esc(g.start) + '" data-period-end="' + esc(g.end) + '">' + esc(g.label) + '</th>').join('') + '</tr><tr>' + groups.map(g => numberHeads(g).map(h => '<th>' + h + '</th>').join('')).join('') + '</tr></thead>';
+    const head = '<thead><tr>' + leadHeads.map(h => '<th rowspan="2">' + h + (h === '来源产业' ? industryFilter : '') + '</th>').join('') + groups.map(g => '<th colspan="' + numberHeads(g).length + '" data-period-start="' + esc(g.start) + '" data-period-end="' + esc(g.end) + '">' + esc(g.label) + '</th>').join('') + '</tr><tr>' + groups.map(g => numberHeads(g).map(h => '<th>' + h + '</th>').join('')).join('') + '</tr></thead>';
     const body = result.rows.map(r => {
-      const targets = shownTargets(r), n = targets.length;
+      const details = shownTargets(r), hasDetails = details.some(Boolean);
+      const expanded = !foldable || (hasDetails && expandedSuppliers.has(r.code)), collapsed = foldable && !expanded;
+      const targets = collapsed ? [null] : details, n = targets.length;
+      const foldButton = foldable ? '<button type="button" class="btn ghost sm" data-toggle-supplier="' + esc(r.code) + '" aria-expanded="' + expanded + '" aria-label="' + esc((expanded ? '收起' : '展开') + r.code + '的来源明细') + '"' + (hasDetails ? '' : ' disabled') + '>' + (hasDetails ? expanded ? '收起' : '展开（' + details.length + '）' : '无明细') + '</button>' : '';
       const shared = (content, i) => i === 0 ? '<td rowspan="' + n + '">' + content + '</td>' : '';
       return targets.map((target, i) => '<tr data-supplier="' + esc(r.code) + '" class="' + (i === 0 ? 'supplier-start' : '') + '">' +
-        [codeLink(r.code), '<span class="wrap">' + esc(r.name || '—') + '</span>', esc(r.make_dept || '—'), esc(r.category || '—')].map(v => shared(v, i)).join('') +
-        '<td>' + (target ? codeLink(target.code) : esc(sourceLabel(r, target))) + '</td><td>' + esc(target?.make_dept || '—') + '</td><td>' + esc(sourceCoeff(target)) + '</td>' +
+        ['<span class="fc-supplier-code">' + codeLink(r.code) + foldButton + '</span>', esc(r.make_dept || '—'), esc(r.part_category || '—'), esc(r.part_subcategory || '—'), esc(r.make_obj_package1 || '—')].map(v => shared(v, i)).join('') +
+        '<td>' + (target ? codeLink(target.code) : collapsed && hasDetails ? '—' : esc(sourceLabel(r, target))) + '</td><td>' + esc(target?.make_dept || '—') + '</td><td>' + esc(sourceCoeff(target)) + '</td>' +
         r.periods.map((x, mi) => {
           const [status, cls] = rowStatus(x), contribution = cumulative ? target?.demand : target?.monthly[mi]?.demand;
           return [x.raw, x.add, x.remove, x.supply].map(v => shared(fmt(v), i)).join('') + '<td>' + fmt(contribution) + '</td>' + shared(fmt(x.demand), i) + shared(bal(x.gap), i) + (x.inventoryIncluded ? shared(fmt(x.inventory), i) + shared(bal(x.coverageGap), i) : '') + shared('<span class="ins-status ' + cls + '">' + status + '</span>', i) + shared(siteCell(x), i) + shared(riskCell(x), i) + (cumulative ? shared(esc(x.firstShortage || '—'), i) : '');
         }).join('') + '</tr>').join('');
     }).join('');
-    $('tbl-body').innerHTML = '<div class="fc-tablewrap tbl-fill"><table class="fc-table">' + head + '<tbody>' + (body || '<tr><td colspan="' + (7 + groups.reduce((n, g) => n + numberHeads(g).length, 0)) + '" class="fc-muted">暂无符合筛选条件的编码</td></tr>') + '</tbody></table></div>';
+    $('tbl-body').innerHTML = '<div class="fc-tablewrap tbl-fill"><table class="fc-table">' + head + '<tbody>' + (body || '<tr><td colspan="' + (leadHeads.length + groups.reduce((n, g) => n + numberHeads(g).length, 0)) + '" class="fc-muted">暂无符合筛选条件的编码</td></tr>') + '</tbody></table></div>';
+    $('tbl-source-industry').onchange = () => { state.sourceIndustry = $('tbl-source-industry').value; state.offset = 0; render(); };
+    $('tbl-body').querySelectorAll('[data-toggle-supplier]').forEach(button => button.onclick = () => {
+      const code = button.dataset.toggleSupplier, wrapper = $('tbl-body').querySelector('.fc-tablewrap'), { scrollTop, scrollLeft } = wrapper;
+      if (expandedSuppliers.has(code)) expandedSuppliers.delete(code); else expandedSuppliers.add(code);
+      renderSummaryTable(result, extra);
+      const nextWrapper = $('tbl-body').querySelector('.fc-tablewrap'); nextWrapper.scrollTop = scrollTop; nextWrapper.scrollLeft = scrollLeft;
+      [...$('tbl-body').querySelectorAll('[data-toggle-supplier]')].find(el => el.dataset.toggleSupplier === code)?.focus({ preventScroll: true });
+    });
     const thead = $('tbl-body').querySelector('thead');
     for (const cell of thead.rows[1].cells) cell.style.top = thead.rows[0].offsetHeight + 'px';
     const pages = Math.max(1, Math.ceil(total / pageSize)), current = Math.floor(state.offset / pageSize) + 1;
-    $('pg-total').textContent = `共 ${fmt(total)} 个编码 · 每页 20 个 · 第 ${current} / ${pages} 页`;
+    $('pg-total').textContent = `共 ${fmt(total)} 个编码 · 每页 20 个 · 第 ${current} / ${pages} 页 · 缺口优先`;
     $('pg-jump').innerHTML = Array.from({ length: pages }, (_, i) => opt(i + 1, `第 ${i + 1} 页`, current)).join('');
     $('pg-jump').onchange = () => { state.offset = (Number($('pg-jump').value) - 1) * pageSize; render(); };
     $('pg-prev').disabled = state.offset <= 0;
@@ -270,7 +316,7 @@ const fSelect = (id, label, values, value) => `<div class="f-group"><label>${lab
       const rows = [];
       for (let off = 0; off < total; off += 1000) { const q = new URLSearchParams(exportQuery); q.set('offset', off); q.set('limit', 1000); q.set('revision', result.trace.revision); const d = await api('/api/analysis?' + q); rows.push(...d.rows); }
       const output = rows.flatMap(r => shownTargets(r).map((target, i) => {
-        const out = { 编码: r.code, 名称: r.name, 产业部门: r.make_dept, 产品大类: r.category, [relationLabel]: sourceLabel(r, target), 来源产业: target?.make_dept || '—', 累计BOM用量: target?.coeff ?? (target ? sourceCoeff(target) : ''), 汇总值说明: i === 0 ? '本编码合计（仅首行记载）' : '来源明细（合计见本编码首行）' };
+        const out = { 编码: r.code, 产业部门: r.make_dept, 产品大类: r.part_category, 产品小类: r.part_subcategory, 加工对象包: r.make_obj_package1, [relationLabel]: sourceLabel(r, target), 来源产业: target?.make_dept || '—', 累计BOM用量: target?.coeff ?? (target ? sourceCoeff(target) : ''), 汇总值说明: i === 0 ? '本编码合计（仅首行记载）' : '来源明细（合计见本编码首行）' };
         for (const [mi, x] of r.periods.entries()) {
           const label = x.label; out['来源BOM用量 ' + label] = cumulative ? target?.coeff ?? (target ? sourceCoeff(target) : '') : target?.monthly[mi]?.coeff ?? ''; out['来源折算需求 ' + label] = (cumulative ? target?.demand : target?.monthly[mi]?.demand) ?? '';
           for (const [name, key, sign] of [['表1预测', 'raw'], ['供应添加', 'add'], ['使用剔除', 'remove'], ['净供应', 'supply'], [demandLabel, 'demand'], ['供需结余', 'gap', -1], ...(x.inventoryIncluded ? [['最新库存', 'inventory'], ['库存后结余', 'coverageGap', -1]] : [])]) out[name + ' ' + label] = i === 0 ? (x[key] == null ? '' : sign ? -x[key] || 0 : x[key]) : '';

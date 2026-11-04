@@ -183,12 +183,19 @@ class Service {
     }
     // 兼容显式 linked 查询；供应汇总表默认包含全部编码。
     if (q.linked) input = input.filter(r => engine.graph.parents.get(r.code).length > 0 || engine.graph.children.get(r.code).length > 0);
+    if (String(q.summary) === '1') input = require('./supply-summary').filterSourceIndustry(engine, input, spanMonths, mode, q.sourceIndustry);
     // 汇总卡片随维度筛选（加工地/产业/大类/搜索/角色）联动；不随风险筛选变化，否则点选某风险卡后其他卡片会归零
     const dimensioned = Query.filter(indexed, { ...q, risk: '' }, engine, input);
     const dashboard = Query.summarize(dimensioned, engine);
-    const rows = Query.filter(indexed, q, engine, input);
+    const filtered = Query.filter(indexed, q, engine, input);
+    const rows = String(q.summary) === '1' ? require('./supply-summary').sortForPeriods(engine, filtered, spanMonths, mode, source, periodMode) : filtered;
     const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
-    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: rows.slice(offset, offset + limit).map(r => this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1', periodMode)), scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖内无自身预测且非透传时供应按0计入；cross/top缺失来源保持未知；KPI卡片与筛选仍按起始月口径。` : '') };
+    const pageRows = rows.slice(offset, offset + limit).map(r => {
+      const row = this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1', periodMode);
+      if (String(q.summary) === '1' && q.sourceIndustry) { row.targets = row.targets.filter(target => target.make_dept === q.sourceIndustry); row.targetCount = row.targets.length; }
+      return row;
+    });
+    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, sourceIndustries: String(q.summary) === '1' ? require('./supply-summary').sourceIndustries(engine, spanMonths, mode) : undefined, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: pageRows, scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖内无自身预测且非透传时供应按0计入；cross/top缺失来源保持未知；KPI卡片与筛选仍按起始月口径。` : '') };
   }
   // 汇总表行：单月直接输出；多月（最多6个月）按累计供需 + 库存滚动水位聚合，并识别跨产业首个编码及其产业
   summaryRow(engine, r, month, span, spanMonths, mode, source, summary = false, periodMode = 'individual') {

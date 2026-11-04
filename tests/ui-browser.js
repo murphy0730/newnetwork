@@ -122,6 +122,9 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.ok(await js("document.querySelector('#ov-root').classList.contains('d-off')")); checks.push('supplier focus shows only selected code with all parent contribution rows');
   await click('#seg-mode [data-mode="cross"]');
   await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('跨产业编码')"), 'cross table');
+  assert.equal(await js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-C\"]').length"), 1);
+  assert.ok(await js("!document.querySelector('#tbl-body').textContent.includes('SUM-B1')"));
+  await click('[data-toggle-supplier="SUM-C"]');
   assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('SUM-B1') && !document.querySelector('#tbl-body').textContent.includes('SUM-A')"));
   assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(x=>x.textContent)"), ['310', '340']); checks.push('cross table stops at first different industry and displays the combined GAP once');
   await js("{ const span=document.querySelector('#tbl-span');span.value='6';span.dispatchEvent(new Event('change')); }");

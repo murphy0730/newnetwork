@@ -18,7 +18,7 @@ function serviceTest(run) {
 }
 const q = { summary: 1, role: 'supply', month: '2026-09', limit: 20 };
 
-test('supplier ordering is bottom-up, then scope sources, then forecast presence before pagination', () => serviceTest(s => {
+test('supplier ordering prioritizes largest shortages before bottom-up ties and pagination', () => serviceTest(s => {
   const data = C.empty(); data.kind = 'imported';
   for (const [code, make_dept, qty] of [['ROOT', 'a', 10000], ['MID', 'a', 1], ['DEEP', 'c', 1000], ['ZERO', 'c', 0], ['MISSING', 'c', null], ['LOCAL', 'a', 50000], ['ISO', 'a', 99]]) {
     data.tables.attributes.push({ code, make_dept, lead_mean: 1 });
@@ -30,7 +30,7 @@ test('supplier ordering is bottom-up, then scope sources, then forecast presence
   s.publish(data, 1, 'test', 'test');
   for (const mode of ['direct', 'cross', 'top']) {
     const all = s.list({ ...q, mode }, 'test');
-    const expected = ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT'];
+    const expected = ['ZERO', 'MID', 'DEEP', 'LOCAL', 'MISSING', 'ISO', 'ROOT'];
     assert.deepEqual(all.rows.map(r => r.code), expected, mode);
     const paged = [];
     for (let offset = 0; offset < all.total; offset += 2) paged.push(...s.list({ ...q, mode, limit: 2, offset }, 'test').rows.map(r => r.code));
@@ -40,8 +40,8 @@ test('supplier ordering is bottom-up, then scope sources, then forecast presence
   }
   const later = s.list({ ...q, mode: 'cross', month: '2026-10' }, 'test');
   assert.deepEqual(later.rows.map(r => r.code), ['DEEP', 'LOCAL', 'MISSING', 'ZERO', 'ISO', 'MID', 'ROOT']);
-  // Multi-month display keeps the start-month ordering used by the table filters.
-  assert.deepEqual(s.list({ ...q, mode: 'cross', span: 2 }, 'test').rows.map(r => r.code), ['DEEP', 'LOCAL', 'ZERO', 'MISSING', 'ISO', 'MID', 'ROOT']);
+  // Multi-month display ranks the largest visible monthly shortage before tie-breakers.
+  assert.deepEqual(s.list({ ...q, mode: 'cross', span: 2 }, 'test').rows.map(r => r.code), ['ZERO', 'MID', 'DEEP', 'LOCAL', 'MISSING', 'ISO', 'ROOT']);
 }));
 
 test('supplier table retains all codes; focus is exact and demand role is suspended only for summary', () => serviceTest(s => {
