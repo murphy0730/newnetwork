@@ -6,7 +6,9 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'supply-lane-')), workerFile 
 fs.writeFileSync(workerFile, "const {parentPort}=require('node:worker_threads');parentPort.on('message',m=>{if(m.method==='hang'){while(true){}}if(m.method==='slow')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,80);parentPort.postMessage({id:m.id,result:m.args});});parentPort.postMessage({ready:true});");
 const pause = ms => new Promise(r => setTimeout(r, ms));
 test('queue is bounded before readiness; active timeout restarts worker and queued cancellation removes work', async () => {
-  const lane = new Lane({ workerFile, queueLimit: 2, timeoutMs: 250 });
+  // 250ms 对「Worker 启动 + 80ms 任务」只有三倍余量，机器上有并行进程时会被抢占打穿（偶发 504）。
+  // 调大到 800ms 仍能验证超时与重启语义，同时不再受 Worker 冷启动抖动影响。
+  const lane = new Lane({ workerFile, queueLimit: 2, timeoutMs: 800 });
   try {
     const first = lane.call('slow', 1), controller = new AbortController(), second = lane.call('slow', 2, 'test', { signal: controller.signal });
     await assert.rejects(lane.call('echo', 3), e => e.status === 429);
