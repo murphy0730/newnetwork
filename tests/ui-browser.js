@@ -117,9 +117,14 @@ async function click(selector) { await wait(() => js(`!!document.querySelector($
   assert.ok(await js("document.querySelector('#tbl-body thead').textContent.includes('父项编码')"));
   await js("document.querySelector('#sc-code').value='SUM-C';document.querySelector('#apply').click()");
   await wait(() => js("document.querySelector('#pg-total')?.textContent.includes('共 1 个编码')"), 'supplier exact focus');
+  assert.equal(await js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-C\"]').length"), 1);
+  assert.ok(await js("!document.querySelector('#tbl-body').textContent.includes('SUM-B1') && !document.querySelector('#tbl-body').textContent.includes('SUM-B2')"));
+  const directBalances = await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(el=>el.textContent)");
+  await click('[data-toggle-supplier="SUM-C"]');
   assert.equal(await js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-C\"]').length"), 2);
+  assert.deepEqual(await js("[...document.querySelectorAll('#tbl-body .fc-gap')].map(el=>el.textContent)"), directBalances);
   assert.ok(await js("document.querySelector('#tbl-body').textContent.includes('SUM-B1') && !document.querySelector('#tbl-body').textContent.includes('SUM-A')"));
-  assert.ok(await js("document.querySelector('#ov-root').classList.contains('d-off')")); checks.push('supplier focus shows only selected code with all parent contribution rows');
+  assert.ok(await js("document.querySelector('#ov-root').classList.contains('d-off')")); checks.push('direct supplier defaults to one total row and expands all parent details without changing totals');
   await click('#seg-mode [data-mode="cross"]');
   await wait(() => js("document.querySelector('#tbl-body thead')?.textContent.includes('跨产业编码')"), 'cross table');
   assert.equal(await js("document.querySelectorAll('#tbl-body [data-supplier=\"SUM-C\"]').length"), 1);

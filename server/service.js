@@ -165,6 +165,7 @@ class Service {
     return this.metaCache;
   }
   list(q, actor) {
+    if (q.locateCode && String(q.summary) !== '1') throw error('仅供应汇总表支持编码定位');
     const periodMode = q.periodMode || 'individual';
     if (!['individual', 'cumulative'].includes(periodMode)) throw error('月份计算方式无效');
     if (String(q.summary) === '1' && q.role === 'demand') throw error('供应汇总表暂不支持需求方视角，请切换为供应方');
@@ -172,6 +173,17 @@ class Service {
     if (String(q.summary) === '1') Object.assign(trace, { view: 'supply-summary', role: 'supply', relationRule: 'resolved-frontier-v3', periodMode });
     const span = int(q.span, 1, 1, 6), spanMonths = String(q.summary) === '1' ? Array.from({ length: span }, (_, i) => C.addMonth(month, i)) : engine.months.slice(engine.months.indexOf(month), engine.months.indexOf(month) + span);
     const indexed = String(q.summary) === '1' ? require('./supply-summary').view(engine, month, mode, source) : Query.view(engine, month, mode, source);
+    let location;
+    if (q.locateCode) {
+      const target = indexed.byCode.get(q.locateCode); if (!target) throw error('编码不存在', 404);
+      q = { ...q }; const clearedFilters = [], clear = key => { if (q[key]) { delete q[key]; clearedFilters.push(key); } };
+      if (q.code && q.code !== target.code) clear('code');
+      if (!Query.filter(indexed, { search: q.search, codes: q.codes }, engine, [target]).length) { clear('search'); clear('codes'); }
+      for (const key of ['site', 'industry', 'category', 'risk']) if (q[key] && !Query.filter(indexed, { [key]: q[key] }, engine, [target]).length) clear(key);
+      if (q.sourceIndustry && !require('./supply-summary').filterSourceIndustry(engine, [target], spanMonths, mode, q.sourceIndustry).length) clear('sourceIndustry');
+      if (q.linked && !engine.graph.parents.get(target.code).length && !engine.graph.children.get(target.code).length) clear('linked');
+      location = { code: target.code, clearedFilters, filters: { code: q.code || '', search: q.search || '', codes: Query.selections(q.codes), site: Query.selections(q.site), industry: q.industry || '', category: q.category || '', risk: q.risk || '', sourceIndustry: q.sourceIndustry || '' } };
+    }
     let input = indexed.rows;
     if (q.code && q.role !== 'demand') {
       if (!engine.orderIndex.has(q.code)) throw error('编码不存在', 404);
@@ -189,13 +201,18 @@ class Service {
     const dashboard = Query.summarize(dimensioned, engine);
     const filtered = Query.filter(indexed, q, engine, input);
     const rows = String(q.summary) === '1' ? require('./supply-summary').sortForPeriods(engine, filtered, spanMonths, mode, source, periodMode) : filtered;
-    const total = rows.length, offset = int(q.offset, 0, 0, 1e9), limit = int(q.limit, 100, 1, 1000);
+    const total = rows.length, limit = int(q.limit, 100, 1, 1000);
+    let offset = int(q.offset, 0, 0, 1e9);
+    if (location) {
+      const index = rows.findIndex(row => row.code === location.code); if (index < 0) throw error('当前筛选范围内无法定位编码', 404);
+      offset = Math.floor(index / limit) * limit; Object.assign(location, { index, offset, page: Math.floor(index / limit) + 1 });
+    }
     const pageRows = rows.slice(offset, offset + limit).map(r => {
       const row = this.summaryRow(engine, r, month, span, spanMonths, mode, source, String(q.summary) === '1', periodMode);
       if (String(q.summary) === '1' && q.sourceIndustry) { row.targets = row.targets.filter(target => target.make_dept === q.sourceIndustry); row.targetCount = row.targets.length; }
       return row;
     });
-    return { trace, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, sourceIndustries: String(q.summary) === '1' ? require('./supply-summary').sourceIndustries(engine, spanMonths, mode) : undefined, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: pageRows, scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖内无自身预测且非透传时供应按0计入；cross/top缺失来源保持未知；KPI卡片与筛选仍按起始月口径。` : '') };
+    return { trace, location, dashboard, total, offset, limit, months: engine.months, spanMonths, periodMode, sourceIndustries: String(q.summary) === '1' ? require('./supply-summary').sourceIndustries(engine, spanMonths, mode) : undefined, periods: (periodMode === 'cumulative' ? [[spanMonths[0], spanMonths.at(-1)]] : spanMonths.map(m => [m, m])).map(([start, end], i) => ({ start, end, inventoryIncluded: periodMode === 'cumulative' || i === 0, label: require('./supply-summary').periodLabel(start, end) })), rows: pageRows, scopeNote: '筛选仅改变展示；每个下层的需求仍覆盖当前口径内全部上层，不进行缺口分配。' + (span > 1 ? `汇总表按 ${month} 起 ${spanMonths.length} 个月${periodMode === 'cumulative' ? '累计匹配，库存只计起始月一次' : '分别匹配，仅起始月同时计算含库存和不含库存缺口，后续月份均不计库存'}；版本覆盖内无自身预测且非透传时供应按0计入；cross/top缺失来源保持未知；KPI卡片与筛选仍按起始月口径。` : '') };
   }
   // 汇总表行：单月直接输出；多月（最多6个月）按累计供需 + 库存滚动水位聚合，并识别跨产业首个编码及其产业
   summaryRow(engine, r, month, span, spanMonths, mode, source, summary = false, periodMode = 'individual') {

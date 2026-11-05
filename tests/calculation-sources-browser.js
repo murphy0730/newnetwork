@@ -116,7 +116,7 @@ async function expandSupplier(code) {
   assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 1);
   assert.equal(await js("document.activeElement.dataset.toggleSupplier"), 'H');
   await expandSupplier('H');
-  checks.push('cross and top suppliers default to one total row; expand/collapse preserves totals and focus while exports retain details');
+  checks.push('suppliers default to one total row; expand/collapse preserves totals and focus while exports retain details');
   assert.equal(await js("document.querySelector('#tbl-hide-empty').getAttribute('aria-pressed')"), 'false');
   const beforeHide = await exported();
   const kpi = await js("document.querySelector('#kpi-grid').textContent");
@@ -128,17 +128,22 @@ async function expandSupplier(code) {
   for (const mode of ['direct', 'cross', 'top']) {
     await click('#seg-mode [data-mode="' + mode + '"]');
     await wait(() => js("document.querySelector('#seg-mode [data-mode=" + mode + "]').classList.contains('active') && !!document.querySelector('#tbl-body tr[data-supplier=H]')"), 'hidden sources mode ' + mode);
-    if (mode !== 'direct') {
-      assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 1);
-      assert.equal(await js("document.querySelectorAll('#tbl-body [data-code]').length"), 1);
-    }
+    assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 1);
+    assert.equal(await js("document.querySelectorAll('#tbl-body [data-code]').length"), 1);
+    assert.equal(await js("document.querySelector('[data-toggle-supplier=H]').getAttribute('aria-expanded')"), 'false');
+    const collapsedExport = await exported();
     await expandSupplier('H');
     assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 6);
     const hidden = await exported();
+    assert.deepEqual(hidden, collapsedExport, mode + ': folding must not remove exported detail');
     assert.deepEqual(hidden.map(r=>r[labels[mode]]).sort(), ['ADD','LATER','NEG_FORECAST','NEG_STOCK','REMOVE','STOCK']);
     assert.equal(hidden.reduce((sum,r)=>sum+(r['供需结余 2026年9-10月']||0),0), beforeHide.reduce((sum,r)=>sum+(r['供需结余 2026年9-10月']||0),0));
     assert.equal(await js("document.querySelector('#tbl-body tr[data-supplier=H] td').rowSpan"), 6);
+    await click('[data-toggle-supplier=H]');
+    assert.equal(await js("document.querySelectorAll('#tbl-body tr[data-supplier=H]').length"), 1);
+    await expandSupplier('H');
   }
+  checks.push('direct, cross and top share default collapse, per-code expand/collapse and complete Excel detail');
   checks.push('toggle hides empty source rows in all three modes and Excel, retaining inventory, signed amounts and original adjustments');
   await js("{const el=document.querySelector('#tbl-period-mode');el.value='individual';el.dispatchEvent(new Event('change'));}");
   await wait(() => js("document.querySelectorAll('#tbl-body th[data-period-start]').length===2"), 'individual hidden sources');
