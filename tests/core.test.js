@@ -99,7 +99,7 @@ test('instruction source excludes completed/cancelled work, not added to forecas
   const after = changesFor(s, { type: 'quality', source: 'mo', code: 'A', month: m, scrapQty: 100, delayDays: 10 }, v); assert.equal(new C.Engine(after).compute(m, 'cross', 'mo').get('A').supply, 0); assert.equal(after.tables.mo.find(r => r.mo_no === '1').qty, 300);
 });
 test('actual headers, multi-sheets, Excel dates, text IDs, CSV quotes, wide adjustments', () => {
-  const s = C.sample(), sheets = I.readFile('sample.xlsx', I.workbook(s)); assert.equal(sheets.length, 6); for (const x of sheets.filter(x => x.matrix.length > 1)) { assert.ok(x.detected); const p = C.parseMatrix(x.detected.table, x.matrix, { date1904: x.date1904 }); assert.deepEqual(p.errors, []); }
+  const s = C.sample(), sheets = I.readFile('sample.xlsx', I.workbook(s)); assert.equal(sheets.length, Object.keys(C.schemas).length); for (const x of sheets.filter(x => x.matrix.length > 1)) { assert.ok(x.detected); const p = C.parseMatrix(x.detected.table, x.matrix, { date1904: x.date1904 }); assert.deepEqual(p.errors, []); }
   const matrix = [['父项', '子项', '子项单位用量'], ['00123', '00234', .555]]; assert.equal(C.detect(matrix).table, 'bom'); const parsed = C.parseMatrix('bom', matrix); assert.equal(parsed.rows[0].qty, .56); assert.equal(parsed.rows[0].parent, '00123');
   assert.equal(C.date(46280), '2026-09-15'); assert.equal(C.date('2026/9/15'), '2026-09-15'); assert.throws(() => C.date('2026-02-30')); assert.throws(() => C.num('NaN'));
   const csv = I.readFile('bom.csv', Buffer.from('\uFEFF父项,子项,子项单位用量\n"P,1",C,2')); assert.equal(csv[0].detected.table, 'bom'); assert.equal(csv[0].matrix[1][0], 'P,1');

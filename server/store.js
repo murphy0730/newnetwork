@@ -33,7 +33,7 @@ class Store {
     if (!r) { if (revision) throw Object.assign(Error('数据快照不存在'), { status: 404 }); return C.empty(); }
     const data = JSON.parse(gunzipSync(r.payload));
     if (data.storage === 'artifact') return this.openArtifact(resolve(dirname(this.path), data.path)).load(data.revision);
-    return data;
+    data.tables = { ...C.empty().tables, ...data.tables }; return data;
   }
   save(next, expected, actor, action, prepared) {
     const filename = join(this.artifactDir, randomUUID() + '.supply');

@@ -22,17 +22,17 @@ class Issues {
 }
 // Scope exclusions must be reported before scopeTables removes their provenance.
 function scopeIssues(t, issues) {
-  const depts = new Set((t.attributes || []).filter(r => r.make_dept).map(r => r.code));
-  const range = new Set(t.forecast.filter(r => depts.has(r.code)).map(r => r.code));
+  const maintained = new Set(t.attributes.map(r => r.code));
+  const range = new Set([...t.forecast.filter(r => maintained.has(r.code)).map(r => r.code), ...C.supplementTables.flatMap(k => (t[k] || []).map(r => r.code))]);
   // 表6仅检查制造部门为空；其余字段留空不视为异常
   for (const r of t.attributes) {
-    if (!r.make_dept) issues.record('attributes', r, 'make_dept', '制造部门为空，无法确认编码所属产业', depts.size ? '保留属性记录；关联预测、库存和BOM按编码范围规则过滤' : '保留记录；全部制造部门缺失，现有编码范围预处理跳过');
+    if (!r.make_dept) issues.record('attributes', r, 'make_dept', '制造部门为空', '保留属性记录；按所选版本补充1/2兜底制造部门，仍为空则按未知部门');
   }
   for (const r of t.forecast) if (r.qty > 0 && !r.site_code) issues.record('forecast', r, 'site_code', r.site_name ? '仅维护加工地名称，缺少加工地代码' : '正数量预测缺少加工地', '保留范围内记录；加工地分析按现有缺失规则处理');
-  if (!depts.size) return;
+  if (!maintained.size) return;
   // BOM关系范围由项目模板判断，不按预测或制造属性记录是否存在排除。
   for (const table of ['forecast', 'inventory']) for (const r of t[table]) {
-    if (!range.has(r.code)) issues.record(table, r, 'code', '不在表1编码与表6有效制造部门编码的交集中', '按编码范围预处理规则排除，不参与本次分析');
+    if (!range.has(r.code)) issues.record(table, r, 'code', '不在表1与表6维护编码的交集或补充预测编码范围内', '按编码范围预处理规则排除，不参与本次分析');
   }
 }
 module.exports = { Issues, scopeIssues };

@@ -55,11 +55,11 @@ async function inspect(filename, name) {
   if (ext === '.csv') {
     const rows = [];
     for await (const row of csvRows(filename, { encoding: await encodingFor(filename, true), maxRows: 20 })) rows.push(row);
-    return [{ name: path.basename(name, path.extname(name)), rows: null, detected: C.detect(rows), preview: rows.slice(0, 5) }];
+    return [{ name: path.basename(name, path.extname(name)), rows: null, detected: C.detect(rows, [name]), preview: rows.slice(0, 5) }];
   }
   if (!['.xlsx', '.xls'].includes(ext)) throw bad('支持CSV、xlsx、xls原始表，或.supply构建产物');
   const wb = excel(filename);
-  return wb.SheetNames.map(name => { const sheet = wb.Sheets[name], rows = [...sheetRows(sheet, name, 20, () => {})], detected = C.detect(rows); return { name, rows: sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']).e.r : 0, detected: detected && rows.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null, preview: rows.slice(0, 5) }; });
+  return wb.SheetNames.map(sheetName => { const sheet = wb.Sheets[sheetName], rows = [...sheetRows(sheet, sheetName, 20, () => {})], detected = C.detect(rows, [sheetName, name]); return { name: sheetName, rows: sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']).e.r : 0, detected: detected && rows.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null, preview: rows.slice(0, 5) }; });
 }
 function parseBatch(table, header, batch, meta) {
   const result = C.parseMatrix(table, [header, ...batch], { ...meta, headerRow: 0 });
@@ -119,7 +119,7 @@ async function readInputs(files, progress = () => {}, issues) {
       let selected = (file.selections || [{ sheet: path.basename(name, ext), table: file.table, headerRow: file.headerRow }]).filter(s => s.table);
       if (!selected.length) { // 未指定目标表（如文件夹一键导入）：按前20行自动识别
         const head = []; for await (const row of csvRows(file.path, { encoding: await encodingFor(file.path, true), maxRows: 20 })) head.push(row);
-        const detected = C.detect(head);
+        const detected = C.detect(head, [name]);
         if (detected) selected = [{ sheet: path.basename(name, ext), table: detected.table, headerRow: detected.headerRow }];
       }
       if (selected.length > 1) throw bad('同一CSV不能重复选择多个目标表');
@@ -127,7 +127,7 @@ async function readInputs(files, progress = () => {}, issues) {
       for (const selection of selected) await attempt(async () => { const stats = {}, rows = await normalize(csvRows(file.path, { encoding: await encodingFor(file.path), progress, stats }), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow }, destination(selection.table), progress, issues); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); sources.push({ name, ...stats }); }, { file: name, sheet: selection.sheet, table: selection.table });
     } else if (['.xlsx', '.xls'].includes(ext)) {
       progress({ phase: 'parse', message: `解析Excel ${name}（大型工作簿需足够内存，可改用分片CSV）` });
-      const wb = excel(file.path), selections = file.selections || wb.SheetNames.map(sheet => ({ sheet, ...C.detect([...sheetRows(wb.Sheets[sheet], sheet, 20, () => {})]) }));
+      const wb = excel(file.path), selections = file.selections || wb.SheetNames.map(sheet => ({ sheet, ...C.detect([...sheetRows(wb.Sheets[sheet], sheet, 20, () => {})], [sheet, name]) }));
       if (issues && !file.selections) for (const s of selections) if (!s.table && s.sheet !== '填写说明' && wb.Sheets[s.sheet]['!ref']) issues.add({ file: name, sheet: s.sheet, field: '表头', message: '未识别工作表类型，请检查表头或手工选择目标表' });
       for (const selection of selections.filter(s => s.table)) await attempt(async () => { if (!wb.Sheets[selection.sheet]) throw bad('指定工作表不存在'); const rows = await normalize(sheetRows(wb.Sheets[selection.sheet], selection.sheet, Infinity, issues ? e => issues.add({ ...e, file: name, table: selection.table }) : undefined), selection.table, { file: name, sheet: selection.sheet, headerRow: selection.headerRow, date1904: !!wb.Workbook?.WBProps?.date1904 }, destination(selection.table), progress, issues); summaries.push({ file: name, sheet: selection.sheet, table: selection.table, rows }); }, { file: name, sheet: selection.sheet, table: selection.table });
       const digest = createHash('sha256'); for await (const chunk of fs.createReadStream(file.path)) digest.update(chunk); sources.push({ name, bytes: fs.statSync(file.path).size, sha256: digest.digest('hex') });
@@ -137,10 +137,10 @@ async function readInputs(files, progress = () => {}, issues) {
 }
 function merge(base, batches) {
   // Replacing demonstration rows must not reset the user's calculation settings.
-  const starting = base.kind === 'sample' ? C.empty() : base, next = { ...starting, tables: { ...starting.tables }, config: { ...C.defaults, ...base.config }, kind: 'imported' }, groups = new Map();
+  const starting = base.kind === 'sample' ? C.empty() : base, next = { ...starting, tables: { ...C.empty().tables, ...starting.tables }, config: { ...C.defaults, ...base.config }, kind: 'imported' }, groups = new Map();
   for (const batch of batches) { if (!groups.has(batch.table)) groups.set(batch.table, []); for (const r of batch.rows) groups.get(batch.table).push(r); }
   for (const [table, rows] of groups) {
-    if (table === 'forecast' || table === 'inventory') { const key = table === 'forecast' ? 'plan_date' : 'date', replacing = new Set(rows.map(r => r[key])); next.tables[table] = starting.tables[table].filter(r => !replacing.has(r[key])).concat(rows); }
+    if (table === 'forecast' || C.supplementTables.includes(table) || table === 'inventory') { const key = table === 'inventory' ? 'date' : 'plan_date', replacing = new Set(rows.map(r => r[key])); next.tables[table] = next.tables[table].filter(r => !replacing.has(r[key])).concat(rows); }
     else next.tables[table] = rows;
   }
   return next;

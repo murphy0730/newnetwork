@@ -137,6 +137,7 @@ function templateSample() {
   for (const [i, code] of codes.entries()) {
     const qty = [100, 250, 800][i], site_code = 'S00' + (i + 1), site_name = '示例加工地' + (i + 1);
     t.forecast.push({ plan_date: version, code, month, qty, site_code, site_name });
+    for (const table of C.supplementTables) t[table].push({ plan_date: version, code, make_dept: ['整机产业', '模组产业', '材料产业'][i], m1: qty, m2: qty + 10 });
     t.attributes.push({ code, name: ['示例整机', '示例模组', '示例材料'][i], make_dept: ['整机产业', '模组产业', '材料产业'][i], lead_mean: [3, 5, 8][i], lead_cv: [.15, .25, .35][i], sample_count: 60, source: '填写样例', part_category: ['成品', '半成品', '材料'][i] });
     t.inventory.push({ id: 'INV-00' + (i + 1), date: month + '-01', code, qty: [10, 20, 50][i], sub_type: '正常库存' });
     t.mo.push({ mo_no: 'MO-00' + (i + 1), code, qty, due_date: month + '-25', sched_date: month + '-24', site_code, site_name, status: '已排产' });

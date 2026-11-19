@@ -26,10 +26,13 @@ function checkConfig(cfg) {
 }
 function changesFor(base, body, version, trusted = false) {
   const next = { ...base, tables: { ...base.tables } }, changes = body.changes || [], seen = new Set();
+  // 独立推演使用已选定的有效预测；保留来源标记以继续按原始/净预测口径处理表2。
+  const forecastRows = C.supplementTables.some(k => (base.tables[k] || []).some(r => r.plan_date === version))
+    ? base.tables.forecast.filter(r => r.plan_date !== version).concat(C.effectiveForecast(base.tables, version)) : base.tables.forecast;
   if (!Array.isArray(changes) || changes.length > 1000) throw error('每个推演最多1000项修改');
   if ((body.type || 'forecast') === 'forecast') {
     if (!changes.length) throw error('请提供至少一项预测修改');
-    const rows = base.tables.forecast.slice(), index = new Map(), versionCodes = new Set(), requested = new Map();
+    const rows = forecastRows.slice(), index = new Map(), versionCodes = new Set(), requested = new Map();
     for (const c of changes) { if (!c || typeof c !== 'object') throw error('推演修改项无效'); const code = String(c.code || ''), month = C.date(c.month, true); if (!requested.has(code)) requested.set(code, new Set()); requested.get(code).add(month); }
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]; if (r.plan_date !== version) continue;
@@ -70,12 +73,12 @@ function changesFor(base, body, version, trusted = false) {
       });
       if (!matched) throw error('该月没有匹配的未完工指令'); if (remaining > C.EPS) throw error('报废数量超过该月可扣减指令数量');
     } else {
-      const matches = base.tables.forecast.filter(r => r.plan_date === version && r.month === month && match(r));
+      const matches = forecastRows.filter(r => r.plan_date === version && r.month === month && match(r));
       if (!matches.length) throw error('该月没有匹配的预测产出');
       const total = matches.reduce((s, r) => s + r.qty, 0); if (scrap > total + C.EPS) throw error('损失数量超过该月预测');
       const dayCount = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate(), matched = new Set(matches), rows = [];
       // Monthly forecast has no intramonth schedule: explicitly assume uniform daily output.
-      for (const r of base.tables.forecast) {
+      for (const r of forecastRows) {
         if (!matched.has(r)) { rows.push(r); continue; }
         const qty = total > 0 ? r.qty * (1 - scrap / total) : 0, buckets = new Map([[month, 0]]);
         for (let d = 0; d < dayCount; d++) { const target = new Date(Date.parse(month + '-01T00:00:00Z') + (d + days) * 86400000).toISOString().slice(0, 7); buckets.set(target, (buckets.get(target) || 0) + qty / dayCount); }
@@ -111,12 +114,12 @@ class Service {
     const existing = this.engines.get(JSON.stringify([revision, version, q.scenario || '']));
     if (existing) { existing.refreshInventory(); return existing; }
     let snap = this.state(revision);
-    version ||= [...new Set(snap.tables.forecast.map(r => r.plan_date))].sort().at(-1);
+    version ||= C.forecastVersions(snap.tables).at(-1);
     const key = JSON.stringify([snap.revision, version, q.scenario || '']);
     if (!this.engines.has(key)) {
       const baseline = scenario ? this.engine({ revision, version }, actor) : null;
       if (scenario) snap = changesFor(snap, scenario.request, version, true);
-      if (version && !snap.tables.forecast.some(r => r.plan_date === version)) throw error('预测版本不存在', 404);
+      if (version && !C.forecastVersions(snap.tables).includes(version)) throw error('预测版本不存在', 404);
       const artifact = !scenario ? this.store.artifact(revision) : null;
       if (!scenario && version && !artifact) throw error('当前数据缺少离线构建产物，请从数据管理启动重建', 503);
       const e = artifact ? Engine.restore(snap, version, artifact) : new Engine(snap, version, baseline?.graph);
@@ -238,7 +241,7 @@ class Service {
     if (!e.orderIndex.has(code)) throw error('编码不存在', 404);
     const row = e.row(code, month, mode, source), targets = e.relations(code, mode, month, true).map(r => { const net = e.net(r.code, month), out = e.edgeDemand(r.code, code, month, mode); return { ...r, forecast: net.raw, remove: net.remove, known: out.known, demand: out.known ? out.value * r.coeff : null, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
     const paths = e.paths(code, month, mode, source), details = e.months.map(m => { const r = e.row(code, m, mode, source); return { month: m, raw: r.raw, add: r.add, remove: r.remove, ...this.compact(r) }; });
-    return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, source: r._source })) };
+    return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, forecastTable: r._forecast_table || 'forecast', source: r._source })) };
   }
   graph(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), depth = int(q.depth, 3, 1, 10);
@@ -314,7 +317,7 @@ class Service {
     return { trace, ...indexed.report };
   }
   simulate(body, actor) {
-    const base = this.state(body.baseRevision == null ? undefined : int(body.baseRevision, 0, 0, 1e9)), version = body.version || [...new Set(base.tables.forecast.map(r => r.plan_date))].sort().at(-1);
+    const base = this.state(body.baseRevision == null ? undefined : int(body.baseRevision, 0, 0, 1e9)), version = body.version || C.forecastVersions(base.tables).at(-1);
     const request = { ...body, version }, after = changesFor(base, request, version, true), beforeEngine = this.engine({ revision: base.revision, version }, actor), afterEngine = new Engine(after, version, beforeEngine.graph);
     const month = body.month || beforeEngine.months[0], mode = body.mode || 'cross', source = body.source || 'forecast';
     if (!['direct', 'cross', 'top'].includes(mode) || !['forecast', 'mo'].includes(source)) throw error('推演口径无效');

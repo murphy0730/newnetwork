@@ -41,7 +41,7 @@ function readFile(name, buffer) {
   }
   if (sheets.reduce((s, x) => s + x.matrix.length, 0) > 5000000) throw Error('单文件总行数超过500万');
   if (sheets.reduce((s, x) => s + x.matrix.reduce((n, row) => n + row.length, 0), 0) > 100000000) throw Error('单文件总单元格超过1亿，请拆分文件');
-  return sheets.map(s => { const detected = C.detect(s.matrix); return { ...s, detected: detected && s.matrix.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null }; });
+  return sheets.map(s => { const detected = C.detect(s.matrix, [s.name, name]); return { ...s, detected: detected && s.matrix.slice(detected.headerRow + 1).some(row => row.some(v => v !== '' && v != null)) ? detected : null }; });
 }
 function publicRows(table, rows) {
   if (!C.schemas[table] || !Array.isArray(rows) || rows.length > 5000000) throw Error('表名或数据行无效');
@@ -56,7 +56,7 @@ function workbook(snapshot, template = false, selectedTable) {
   const wb = XLSX.utils.book_new(), sample = template ? require('./demo-data').templateSample() : null;
   const schemas = Object.entries(C.schemas).filter(([table]) => !selectedTable || table === selectedTable);
   for (const [table, schema] of schemas) {
-    const keys = Object.keys(schema.fields), rows = template ? sample.tables[table] : snapshot.tables[table];
+    const keys = Object.keys(schema.fields), rows = (template ? sample.tables[table] : snapshot.tables[table]) || [];
     const matrix = [keys.map(k => schema.fields[k].label)];
     for (const r of rows) matrix.push(keys.map(k => typeof r[k] === 'boolean' ? r[k] ? '是' : '否' : r[k] == null ? '' : r[k]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(matrix), table);
@@ -72,8 +72,10 @@ function workbook(snapshot, template = false, selectedTable) {
       ['4. 大型数据建议按表分片CSV。在线流式上传，独立进程构建，页面可查看阶段、错误和结果；不设文件总量/总单元格/编码数上限，实际受机器内存、磁盘及Excel格式限制。'],
       ['5. 库存可用量支持负数（按减法计入），子库类型可留空；表6制造部门留空会记录数据问题；BOM配比小于0.01及编码范围过滤也会逐行记录。成功或失败任务均可下载全部及分表问题CSV，保留7天。'],
       ['6. 同一预测版本或库存日期的全部分片应作为同一批次提交。构建完成后装载.supply产物，不再在线全量重算；产物保存完整数据及计算结果，可回溯。'],
-      ['7. 表2示例同时展示供应添加与使用剔除。已预处理净预测模式不会重复应用表2；仅原始预测模式应用调整数量。生产指令为可选数据。'],
+      ['7. 表2示例同时展示供应添加与使用剔除。表1已预处理净预测模式不会重复应用表2；表1原始预测及两张补充原始预测应用调整数量。生产指令为可选数据。'],
       ['8. BOM按父项模板、子项模板逐编码汇总：一致为AI参与关系计算；一致且明确非AI的编码相关边不参与。模板缺失或同编码模板不一致时保留参与，并输出问题清单。原始BOM保留，不会跨越被排除编码重连上下游。'],
+      ['9. 预测表-补充1/2：item_code为编码，plantdate为预测版本；m1为版本同月，m18为向后第17个月。空白不生成预测，显式0保留。按版本/编码/月份优先表1、补充1、补充2，不叠加；补充量为原始预测，始终应用表2。两补充表分别按plantdate覆盖完整版本，不互相覆盖；文件或工作表请使用预测表-补充1/2名称以自动区分。'],
+      ['10. 制造部门优先表6非空make_dept，再取所选预测版本补充1/2非空make_dept，均为空则按未知部门；补充编码及其库存不因缺少表6记录而过滤。'],
       [],
       ['工作表', '数据名称', '必填字段'],
       ...schemas.map(([k, s]) => [k, s.label, s.required.map(f => s.fields[f].label).join('、')])

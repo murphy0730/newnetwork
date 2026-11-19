@@ -12,20 +12,21 @@ const fail = message => Object.assign(Error(message), { status: 422 });
 const maximumLevel = graph => { let max = -1; for (const level of graph.level.values()) max = Math.max(max, level); return max + 1; };
 
 function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], prepared, validation: suppliedValidation } = {}) {
+  snapshot = { ...snapshot, tables: { ...C.empty().tables, ...snapshot.tables } };
   if (fs.existsSync(filename)) throw fail('构建目标已存在，请使用新的产物文件名');
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const temporary = filename + '.partial', started = Date.now();
   const validation = suppliedValidation || C.validate(snapshot);
   if (validation.errors.length) throw Object.assign(fail('关联校验失败'), { details: validation.errors });
   progress({ phase: 'graph', message: '建立BOM图及周期路径', percent: 35 });
-  const graph = C.topology(snapshot.tables), versions = [...new Set(snapshot.tables.forecast.map(r => r.plan_date))].sort();
+  const graph = C.topology(snapshot.tables), versions = C.forecastVersions(snapshot.tables);
   const counts = Object.fromEntries(Object.entries(snapshot.tables).map(([k, rows]) => [k, rows.length]));
   const manifest = { format: FORMAT, algorithm, buildId: randomUUID(), builtAt: new Date().toISOString(), kind: snapshot.kind, config: snapshot.config, counts, versions, monthsByVersion: {}, statsByVersion: {}, codes: graph.codes.length, edges: [...graph.children.values()].reduce((sum, rows) => sum + rows.length, 0), levels: maximumLevel(graph), warnings: validation.warnings, sources, summaries: [], sites: [], tableJsonCharacters: 0, maxChunkBytes: 0 };
   const sites = new Map();
   for (const r of snapshot.tables.forecast) if (r.site_code || r.site_name) { const code = r.site_code || '名称:' + r.site_name; sites.set(code, { code, name: r.site_name || r.site_code }); }
   manifest.sites = [...sites.values()];
   manifest.categories = [...new Set(snapshot.tables.attributes.map(r => r.part_category).filter(Boolean))].sort();
-  manifest.departments = [...new Set(snapshot.tables.attributes.map(r => r.make_dept || '未知部门'))].sort();
+  const departments = new Set(snapshot.tables.attributes.map(r => r.make_dept || '未知部门'));
   const db = new DatabaseSync(temporary);
   try {
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
@@ -46,6 +47,7 @@ function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], 
     let graphWritten = false;
     for (let vi = 0; vi < Math.max(1, versions.length); vi++) {
       const version = versions[vi], e = new Engine(snapshot, version, graph), begun = Date.now();
+      for (const code of graph.codes) departments.add(e.dept(code));
       if (!graphWritten) {
         writeRows('graph', (function* () { for (const code of graph.codes) yield [code, e.orderIndex.get(code), graph.level.get(code), e.criticalCache.get(code)]; })());
         graphWritten = true;
@@ -69,7 +71,7 @@ function buildSnapshot(snapshot, filename, { progress = () => {}, sources = [], 
       manifest.monthsByVersion[version] = e.months;
       manifest.statsByVersion[version] = { milliseconds: Date.now() - begun, matrices, cells: graph.codes.length * e.months.length * 6 };
     }
-    manifest.milliseconds = Date.now() - started;
+    manifest.departments = [...departments].sort(); manifest.milliseconds = Date.now() - started;
     db.prepare('INSERT INTO manifest VALUES(1,?)').run(JSON.stringify(manifest));
     db.exec('COMMIT'); db.close();
     fs.renameSync(temporary, filename);
@@ -102,7 +104,7 @@ class Artifact {
   load(revision = 0) {
     if (!this.snapshot) {
       const tables = {};
-      for (const table of Object.keys(C.schemas)) { const rows = []; for (const row of this.rows('table/' + table)) rows.push(row); if (rows.length !== this.manifest.counts[table]) throw fail('构建产物表行数不符：' + table); tables[table] = rows; }
+      for (const table of Object.keys(C.schemas)) { const rows = []; for (const row of this.rows('table/' + table)) rows.push(row); if (rows.length !== (this.manifest.counts[table] ?? 0)) throw fail('构建产物表行数不符：' + table); tables[table] = rows; }
       this.snapshot = { format: 1, revision, kind: this.manifest.kind, updated_at: this.manifest.builtAt, config: this.manifest.config, tables };
     }
     return { ...this.snapshot, revision };

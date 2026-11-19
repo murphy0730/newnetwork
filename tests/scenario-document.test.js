@@ -60,6 +60,14 @@ add('S30', '指令模式无指令数据', 'A(Y)=100→C(X)=50，但完全没有�
 add('S31', '透传节点自身不计缺口', 'A(Y)=100→C(X,无预测)；C有表6。C保留原部门X，可展示上游需求100，但供应未知、自身缺口不计算。', () => fixture([['A', 'Y', 100], ['C', 'X', null]], [['A', 'C']]), same(100, null), { passThrough: true });
 add('S32', '无父项的独立供应编码', 'C属X、预测50、库存20；没有有效BOM父项。图内部上层需求0、缺口不适用；表格需求—、结余0。', () => { const s = fixture([['C', 'X', 50]], []); s.tables.inventory.push({ code: 'C', date: month + '-01', qty: 20 }); return s; }, same(null, 0), { coverage: 0 });
 add('S33', '预测有值但缺表6被导入范围过滤', '导入前A=100但无表6，C属Y、预测50；表6非空。预测范围预处理移除A预测，AI边A→C保留。', () => { const s = fixture([['A', null, 100], ['C', 'Y', 50]], [['A', 'C']]); C.scopeTables(s.tables); return s; }, [[0, -50], [null, null], [null, null]]);
+function supplement(s, table, code, values, make_dept = '', v = version) { s.tables['forecastSupplement' + table].push({ code, plan_date: v, make_dept, ...values }); return s; }
+add('S39', '表1缺失时补充1成为有效预测', 'A/B属X，C属Y；A=100、C=50；B在表1无记录，补充1的m1=80、补充2的m1=200。优先使用补充1。', () => supplement(supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }), 2, 'B', { m1: 200 }), [[80, 30], [80, 30], [100, 50]]);
+add('S40', '表1显式0阻止补充', 'A/B属X，C属Y；A=100、B表1=0、C=50；B补充1的m1=80。B仍按表1显式0，不补充、不叠加。', () => supplement(chain({ b: 0, cd: 'Y' }), 1, 'B', { m1: 80 }), [[0, -50], [0, -50], [100, 50]]);
+add('S41', '补充1空白时使用补充2', 'A/B属X，C属Y；A=100、C=50，B表1无记录；B补充1的m1为空、m2=300，补充2的m1=70。本月使用补充2，不借用下月。', () => supplement(supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: null, m2: 300 }), 2, 'B', { m1: 70 }), [[70, 20], [70, 20], [100, 50]]);
+add('S42', '补充1显式0阻止补充2', 'A/B属X，C属Y；A=100、C=50，B表1无记录；B补充1的m1=0、补充2的m1=70。本月B是已知0。', () => supplement(supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 0 }), 2, 'B', { m1: 70 }), [[0, -50], [0, -50], [100, 50]]);
+add('S43', '补充制造部门改变跨产业边界', 'A属X、C属Y；B无表6、表1无预测，补充1的m1=80且make_dept=Y。B与C同产业，cross继续到A；B及其预测不会因无表6被过滤。', () => { const s = supplement(chain({ b: null, bd: null, cd: 'Y' }), 1, 'B', { m1: 80 }, 'Y'); C.scopeTables(s.tables); return s; }, [[80, 30], [100, 50], [100, 50]]);
+add('S44', '净预测设置下补充原始量仍应用表2', 'A/B属X、C属Y，表1按net：A=100、C=50；B表1无记录、补充1的m1=80，表2对B供应添加10、使用剔除20。B作为需求来源的净需求60，top仍取A=100。', () => { const s = supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }); s.tables.adjust.push({ code: 'B', direction: '供应', purchase_code: 'BUY', month, qty: 10 }, { code: 'B', direction: '使用', purchase_code: '', month, qty: 20 }); return s; }, [[60, 10], [60, 10], [100, 50]]);
+add('S45', '其他版本补充量不回填当前版本', 'A/B属X，C属Y；A=100、C=50，当前版本B表1及两补充表均无记录；补充1仅在2026-09-23版本有B的m1=80。当前版本B仍缺失，cross/top继续到A。', () => supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }, 'X', '2026-09-23'), [[0, -50], [100, 50], [100, 50]]);
 
 function status(r) { return r.passThrough ? '透传' : !r.applicable ? '不适用' : !r.complete ? '数据不完整' : r.partial ? '部分来源缺失' : '完整'; }
 function verify(c) {
@@ -120,7 +128,8 @@ function periodMarkdown() {
   return out;
 }
 function markdown() {
-  return cases.map(c => `### ${c.id} ${c.title}\n\n${c.conditions}\n\n| 口径 | C的来源 | C需求 | 内部缺口 | 库存后内部缺口 | 状态 |\n|---|---|---:|---:|---:|---|\n` + verify(c).map(r => `| ${r.mode} | ${r.sources} | ${cell(r.demand)} | ${cell(r.gap)} | ${cell(r.coverageGap)} | ${r.status} |`).join('\n')).join('\n\n') + '\n\n' + periodMarkdown();
+  const render = c => `### ${c.id} ${c.title}\n\n${c.conditions}\n\n| 口径 | C的来源 | C需求 | 内部缺口 | 库存后内部缺口 | 状态 |\n|---|---|---:|---:|---:|---|\n` + verify(c).map(r => `| ${r.mode} | ${r.sources} | ${cell(r.demand)} | ${cell(r.gap)} | ${cell(r.coverageGap)} | ${r.status} |`).join('\n');
+  return cases.filter(c => Number(c.id.slice(1)) <= 33).map(render).join('\n\n') + '\n\n' + periodMarkdown() + '\n\n' + cases.filter(c => Number(c.id.slice(1)) >= 39).map(render).join('\n\n');
 }
 for (const c of cases) test(`文档验算 ${c.id}：${c.title}`, () => verify(c));
 test('文档验算 S34～S38：逐月来源、系数、累计、覆盖范围和跨日库存', () => periodMarkdown());

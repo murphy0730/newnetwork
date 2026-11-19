@@ -6,6 +6,12 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const field = (label, aliases = [], type = 'text') => ({ label, aliases, type });
+  const supplementTables = ['forecastSupplement1', 'forecastSupplement2'];
+  const supplementFields = () => ({
+    plan_date: field('plantdate', ['plan_date', '计划日期', '预测版本'], 'date'), code: field('item_code', ['编码']),
+    make_dept: field('make_dept', ['制造部门']),
+    ...Object.fromEntries(Array.from({ length: 18 }, (_, i) => ['m' + (i + 1), field('m' + (i + 1), [], 'optionalNumber')]))
+  });
   const schemas = {
     forecast: { label: '表1 · 月度产出预测', required: ['plan_date', 'code', 'month', 'qty'], fields: {
       plan_date: field('计划日期', ['预测版本'], 'date'), code: field('编码', ['项目编码', 'part_no']),
@@ -15,6 +21,8 @@
       org_id: field('组织ID'), org_code: field('组织代码'), product_line: field('产品线'), product_family: field('产品族'),
       package: field('加工对象包'), points: field('预测点数'), refreshed_at: field('数据刷新时间')
     } },
+    forecastSupplement1: { label: '预测表-补充1', required: ['plan_date', 'code'], fields: supplementFields() },
+    forecastSupplement2: { label: '预测表-补充2', required: ['plan_date', 'code'], fields: supplementFields() },
     bom: { label: '表3 · BOM基表', required: ['parent', 'child', 'qty'], fields: {
       id: field('id'), parent: field('父项', ['父项编码']), child: field('子项', ['子项编码']), qty: field('子项单位用量', ['配比数量'], 'number'),
       child_type: field('子项供应类型'), child_template: field('子项模板'), parent_type: field('父项供应类型'), parent_template: field('父项模板'), created_at: field('创建时间')
@@ -83,17 +91,25 @@
     });
     return map;
   }
-  function detect(matrix) {
+  function detect(matrix, names = []) {
     const candidates = [];
     for (let row = 0; row < Math.min(10, matrix.length); row++) {
       for (const key of Object.keys(schemas)) {
         try {
           const map = headerMap(key, matrix[row]);
+          if (supplementTables.includes(key) && !Array.from({ length: 18 }, (_, i) => 'm' + (i + 1)).some(k => map.has(k))) continue;
           if (schemas[key].required.every(k => map.has(k))) candidates.push({ table: key, headerRow: row, score: map.size });
         } catch (_) { /* The selected parser returns detailed duplicate-header errors. */ }
       }
     }
     candidates.sort((a, b) => b.score - a.score || a.headerRow - b.headerRow);
+    if (candidates[0] && supplementTables.includes(candidates[0].table)) {
+      // 两张补充表结构相同，必须用工作表名或文件名区分，不能静默猜测。
+      const named = names.map(header).map(n => supplementTables.find((key, i) => {
+        const stem = n.replace(/\.(csv|xlsx|xls)$/, ''); return stem === header(key) || stem === '预测表-补充' + (i + 1);
+      })).find(Boolean);
+      return named ? candidates.find(c => c.table === named) || null : null;
+    }
     if (!candidates.length || (candidates[1] && candidates[0].score === candidates[1].score && candidates[0].headerRow === candidates[1].headerRow)) return null;
     return candidates[0];
   }
@@ -104,6 +120,7 @@
     try {
       map = headerMap(table, matrix[offset] || []);
       for (const key of schema.required) if (!map.has(key)) throw Error(`缺少列：${schema.fields[key].label}`);
+      if (supplementTables.includes(table) && !Array.from({ length: 18 }, (_, i) => 'm' + (i + 1)).some(k => map.has(k))) throw Error('至少需要一列m1～m18预测数量');
     } catch (e) { fail(offset + 1, '表头', e.message); return { rows, errors }; }
     const months = table === 'adjust' ? (matrix[offset] || []).map((h, i) => ({ h: text(h), i })).filter(c => /^\d{4}-\d{2}$/.test(c.h)) : [];
     if (table === 'adjust' && !months.length && (!map.has('month') || !map.has('qty'))) fail(offset + 1, '表头', '需要YYYY-MM月份列，或月份、数量长表列');
@@ -174,7 +191,7 @@
   function topology(tables) {
     const bom = bomTemplateScope(tables.bom || []).rows;
     const codes = new Set(), parents = new Map(), children = new Map();
-    for (const k of ['forecast', 'attributes', 'inventory', 'adjust', 'mo']) for (const r of tables[k] || []) if (r.code) codes.add(r.code);
+    for (const k of ['forecast', ...supplementTables, 'attributes', 'inventory', 'adjust', 'mo']) for (const r of tables[k] || []) if (r.code) codes.add(r.code);
     for (const r of bom) { codes.add(r.parent); codes.add(r.child); }
     for (const c of codes) { parents.set(c, []); children.set(c, []); }
     for (const r of bom) { parents.get(r.child).push(r); children.get(r.parent).push(r); }
@@ -200,7 +217,7 @@
     const addError = (r, message) => errors.push({ ...(r._source || {}), field: '关联校验', message });
     for (const key of Object.keys(schemas)) {
       const seen = new Set();
-      for (const r of t[key]) {
+      for (const r of t[key] || []) {
         let id;
         if (key === 'attributes') id = r.code;
         if (key === 'mo') id = r.mo_no;
@@ -222,15 +239,16 @@
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && !r.site_name)) warnings.push('部分正数量预测缺加工地，相关单一加工地判定为数据不完整');
     if (t.forecast.some(r => r.qty > 0 && !r.site_code && r.site_name)) warnings.push('部分加工地只有名称，将按名称临时识别；建议补加工地代码');
     if (!t.inventory.length) warnings.push('尚无库存快照，仅能计算预测匹配；库存覆盖结果显示未知');
-    if (snapshot.config.input_mode === 'net' && t.adjust.length) warnings.push('当前按已预处理净预测分析，表2不再重复应用');
+    if (snapshot.config.input_mode === 'net' && t.adjust.length) warnings.push('表1按已预处理净预测分析，表2不再重复应用；补充预测为原始预测，仍应用表2');
     // 表2供应添加/使用剔除为人工维护量，与表1预测相互独立：即使某月预测为0也允许剔除，不做拦截。
     return { errors, warnings };
   }
   function prepare(current, batches) {
     const next = current.kind === 'sample' ? empty() : copy(current), grouped = new Map();
+    next.tables = { ...empty().tables, ...next.tables };
     for (const b of batches) { if (!grouped.has(b.table)) grouped.set(b.table, []); const target = grouped.get(b.table); for (const row of b.rows) target.push(row); }
     for (const [table, rows] of grouped) {
-      if (table === 'forecast' || table === 'inventory') { const field = table === 'forecast' ? 'plan_date' : 'date', keys = new Set(rows.map(r => r[field])); next.tables[table] = next.tables[table].filter(r => !keys.has(r[field])).concat(rows); }
+      if (table === 'forecast' || supplementTables.includes(table) || table === 'inventory') { const field = table === 'inventory' ? 'date' : 'plan_date', keys = new Set(rows.map(r => r[field])); next.tables[table] = next.tables[table].filter(r => !keys.has(r[field])).concat(rows); }
       else next.tables[table] = rows;
     }
     next.kind = 'imported'; next.updated_at = new Date().toISOString(); next.revision = current.revision + 1;
@@ -249,25 +267,45 @@
     const list = [...sites.values()].sort((a, b) => b.qty - a.qty).map(s => ({ ...s, suppliers: [...s.suppliers], share: total + adjustment > 0 ? s.qty / (total + adjustment) : null }));
     return { sites: list, total, unassigned, count: sites.size, single: total > 0 && unassigned <= EPS && sites.size === 1, complete: unassigned <= EPS && total > 0, maxShare: list.length ? list[0].share : null };
   }
+  function forecastVersions(tables) {
+    return [...new Set(['forecast', ...supplementTables].flatMap(k => (tables[k] || []).map(r => r.plan_date)))].sort();
+  }
+  function effectiveForecast(tables, version) {
+    const rows = (tables.forecast || []).filter(r => r.plan_date === version);
+    const occupied = new Set(rows.map(r => JSON.stringify([r.code, r.month])));
+    for (const table of supplementTables) {
+      const added = new Set();
+      for (const r of tables[table] || []) if (r.plan_date === version) {
+        for (let i = 1; i <= 18; i++) {
+          const qty = r['m' + i]; if (qty == null || text(qty) === '') continue;
+          const month = addMonth(r.plan_date.slice(0, 7), i - 1), key = JSON.stringify([r.code, month]);
+          if (!occupied.has(key)) { rows.push({ code: r.code, plan_date: r.plan_date, month, qty, _forecast_table: table, _source: r._source }); added.add(key); }
+        }
+      }
+      for (const key of added) occupied.add(key);
+    }
+    return rows;
+  }
+  function forecastAttributes(tables, version) {
+    const attributes = new Map(tables.attributes.map(r => [r.code, r]));
+    for (const table of supplementTables) for (const r of tables[table] || []) {
+      if (r.plan_date !== version || !text(r.make_dept) || text(attributes.get(r.code)?.make_dept)) continue;
+      attributes.set(r.code, { ...attributes.get(r.code), code: r.code, make_dept: text(r.make_dept) });
+    }
+    return attributes;
+  }
   class Engine {
     constructor(snapshot, planDate, sharedGraph) {
       this.snapshot = snapshot; this.t = snapshot.tables; this.cfg = { ...defaults, ...snapshot.config };
-      this.graph = sharedGraph || topology(this.t); this.attributes = new Map(this.t.attributes.map(r => [r.code, r]));
+      this.graph = sharedGraph || topology(this.t);
       this.orderIndex = new Map(this.graph.order.map((c, i) => [c, i]));
-      this.versions = [...new Set(this.t.forecast.map(r => r.plan_date))].sort(); this.version = planDate || this.versions.at(-1);
-      this.forecast = this.t.forecast.filter(r => r.plan_date === this.version); this.byCodeMonth = new Map(); this.byCode = new Map();
-      for (const r of this.forecast) { const k = JSON.stringify([r.code, r.month]); if (!this.byCodeMonth.has(k)) this.byCodeMonth.set(k, []); this.byCodeMonth.get(k).push(r); if (!this.byCode.has(r.code)) this.byCode.set(r.code, []); this.byCode.get(r.code).push(r); }
-      const months = [...new Set(this.forecast.map(r => r.month))].sort(); this.months = [];
-      if (months.length && (Number(months.at(-1).slice(0, 4)) - Number(months[0].slice(0, 4))) * 12 + Number(months.at(-1).slice(5)) - Number(months[0].slice(5)) > 119) throw Error('单预测版本月份跨度不得超过120个月');
-      if (months.length) for (let m = months[0]; m <= months.at(-1); m = addMonth(m, 1)) this.months.push(m);
+      this.versions = forecastVersions(this.t); this.version = planDate || this.versions.at(-1);
+      this.attributes = forecastAttributes(this.t, this.version); this.initializeForecast();
       this.inventory = new Map(); this.inventoryDates = new Set(this.t.inventory.map(r => r.date)); this.excludedInventory = 0;
       for (const r of this.t.inventory) { if (/^(生产-三品|备件-)/.test(r.sub_type)) { this.excludedInventory++; continue; } const k = JSON.stringify([r.code, r.date]); this.inventory.set(k, (this.inventory.get(k) || 0) + r.qty); }
       // 表4取值规则：快照按日刷新（每日零点一版），取「当日最新」——不晚于今天的最大快照日期；无则库存未知
       this.inventorySnapshotDate = null;
       for (const d of this.inventoryDates) if (d <= today() && (!this.inventorySnapshotDate || d > this.inventorySnapshotDate)) this.inventorySnapshotDate = d;
-      this.adjustments = new Map();
-      if (this.cfg.input_mode === 'raw') for (const r of this.t.adjust) { const k = JSON.stringify([r.code, r.month]); if (!this.adjustments.has(k)) this.adjustments.set(k, { add: 0, remove: 0 }); this.adjustments.get(k)[r.direction === '供应' ? 'add' : 'remove'] += r.qty; }
-      this.periodAdds = new Map(); for (const [key, adjustment] of this.adjustments) { const [code, month] = JSON.parse(key); if (this.months.includes(month)) this.periodAdds.set(code, (this.periodAdds.get(code) || 0) + adjustment.add); }
       this.relationCache = new Map(); this.monthCache = new Map(); this.criticalCache = new Map(); this.netCache = new Map(); this.periodSiteCache = new Map(); this.materialized = new Map();
       this.moByCodeMonth = new Map();
       for (const r of this.t.mo || []) if (!r.actual_date && !/取消|关闭|完成|cancel|closed|complete/i.test(r.status || '')) {
@@ -281,7 +319,28 @@
         this.criticalCache.set(c, { path: [c, ...(best?.path || [])], knownDays: (mean || 0) + (best?.knownDays || 0), days: complete ? (mean || 0) + (best?.knownDays || 0) : null, complete });
       }
     }
-    // 产业直接按表6制造属性维护基表的 make_dept 区分：每个制造部门即一个产业，不再使用合并映射
+    initializeForecast() {
+      this.forecast = effectiveForecast(this.t, this.version); this.byCodeMonth = new Map(); this.byCode = new Map();
+      const rawKeys = new Set();
+      for (const r of this.forecast) {
+        const key = JSON.stringify([r.code, r.month]);
+        if (!this.byCodeMonth.has(key)) this.byCodeMonth.set(key, []); this.byCodeMonth.get(key).push(r);
+        if (!this.byCode.has(r.code)) this.byCode.set(r.code, []); this.byCode.get(r.code).push(r);
+        if (r._forecast_table) rawKeys.add(key);
+      }
+      const months = [...new Set(this.forecast.map(r => r.month))].sort(); this.months = [];
+      if (months.length && (Number(months.at(-1).slice(0, 4)) - Number(months[0].slice(0, 4))) * 12 + Number(months.at(-1).slice(5)) - Number(months[0].slice(5)) > 119) throw Error('单预测版本月份跨度不得超过120个月');
+      if (months.length) for (let m = months[0]; m <= months.at(-1); m = addMonth(m, 1)) this.months.push(m);
+      this.adjustments = new Map(); this.periodAdds = new Map();
+      for (const r of this.t.adjust) {
+        const key = JSON.stringify([r.code, r.month]);
+        if (this.cfg.input_mode !== 'raw' && !rawKeys.has(key)) continue;
+        if (!this.adjustments.has(key)) this.adjustments.set(key, { add: 0, remove: 0 });
+        this.adjustments.get(key)[r.direction === '供应' ? 'add' : 'remove'] += r.qty;
+        if (r.direction === '供应' && this.months.includes(r.month)) this.periodAdds.set(r.code, (this.periodAdds.get(r.code) || 0) + r.qty);
+      }
+    }
+    // 产业优先表6，缺失时取所选版本补充1/2的非空制造部门。
     dept(code) { const a = this.attributes.get(code); return a && a.make_dept ? a.make_dept : '未知部门'; }   // make_dept 为空或无表6维护行，统一按「未知部门」作为一个部门参与计算
     sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {
@@ -562,14 +621,14 @@
     }
     return s;
   }
-  // 编码范围预处理：表1/表4 仍按「表1编码 ∩ 表6有维护行」过滤；
+  // 编码范围预处理：原表1范围加上两张补充表编码；补充编码不依赖表6维护。
   // 表3 不按表1筛选，保留全量 BOM 网络（无预测记录的编码作为透传节点参与上溯计算）
   function scopeTables(tables) {
     const withDept = new Set();
     for (const r of tables.attributes || []) withDept.add(r.code);
     const before = { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length };
     if (!withDept.size) return { range: null, skipped: true, before, after: { ...before } }; // 表6为空时没有筛选依据，跳过预处理
-    const range = new Set();
+    const range = new Set(supplementTables.flatMap(k => (tables[k] || []).map(r => r.code)));
     for (const r of tables.forecast || []) if (withDept.has(r.code)) range.add(r.code);
     tables.forecast = tables.forecast.filter(r => range.has(r.code));
     tables.inventory = tables.inventory.filter(r => range.has(r.code));
@@ -577,5 +636,5 @@
     return { range: range.size, skipped: false, before, after: { forecast: tables.forecast.length, inventory: tables.inventory.length, bom: tables.bom.length } };
   }
 
-  return { schemas, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, bomTemplateScope, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, scopeTables, EPS };
+  return { schemas, supplementTables, forecastVersions, effectiveForecast, forecastAttributes, defaults, empty, copy, today, addMonth, date, num, bool, detect, headerMap, parseMatrix, bomTemplateScope, topology, validate, prepare, siteSummary, Engine, sample, sampleLarge, scopeTables, EPS };
 });

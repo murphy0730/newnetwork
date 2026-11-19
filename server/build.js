@@ -86,11 +86,11 @@ async function run(spec, progress = () => {}) {
       const rows = normalized(body.table, body.rows, issues); next = { ...base, tables: { ...base.tables } };
       if (body.table === 'attributes') { const codes = new Set(rows.map(r => r.code)); next.tables.attributes = base.tables.attributes.filter(r => !codes.has(r.code)).concat(rows); } else next.tables.adjust = rows;
     } else if (operation !== 'rebuild') throw fail('未知构建操作');
-    // 编码范围预处理（仅业务数据路径；示例数据保留边界与不完整场景）：表1编码 ∩ 表6已维护制造部门
+    // 编码范围预处理：表1与表6维护行的交集，加上补充预测编码；示例保留边界场景。
     if (['preview', 'maintain', 'config', 'restore'].includes(operation)) {
       scopeIssues(next.tables, issues);
       const scope = C.scopeTables(next.tables), dropped = scope.before.forecast - scope.after.forecast + scope.before.inventory - scope.after.inventory + scope.before.bom - scope.after.bom;
-      if (dropped) { progress({ phase: 'scope', message: `编码范围以表1∩表6制造部门为准（${scope.range}个编码），过滤 ${dropped} 行超范围数据`, percent: 22 }); spec.scopeWarning = `编码范围预处理：以表1编码且表6已维护制造部门为准（${scope.range}个编码），预测 ${scope.before.forecast}→${scope.after.forecast}、库存 ${scope.before.inventory}→${scope.after.inventory}、BOM ${scope.before.bom}→${scope.after.bom}`; }
+      if (dropped) { progress({ phase: 'scope', message: `编码范围以表1∩表6维护行及补充预测编码为准（${scope.range}个编码），过滤 ${dropped} 行超范围数据`, percent: 22 }); spec.scopeWarning = `编码范围预处理：表1与表6维护编码的交集，加上补充预测编码（${scope.range}个编码），预测 ${scope.before.forecast}→${scope.after.forecast}、库存 ${scope.before.inventory}→${scope.after.inventory}、BOM ${scope.before.bom}→${scope.after.bom}`; }
     }
     progress({ phase: 'validate', message: '校验表关联与BOM循环依赖', percent: 25 });
     // 不再因问题数据阻断导入：重复键行与成环边剔除后继续构建；无法自动剔除的问题才失败
