@@ -27,7 +27,7 @@ function checkConfig(cfg) {
 function changesFor(base, body, version, trusted = false) {
   const next = { ...base, tables: { ...base.tables } }, changes = body.changes || [], seen = new Set();
   // 独立推演使用已选定的有效预测；保留来源标记以继续按原始/净预测口径处理表2。
-  const forecastRows = C.supplementTables.some(k => (base.tables[k] || []).some(r => r.plan_date === version))
+  const forecastRows = C.supplementTables.some(k => (base.tables[k] || []).some(r => r.plan_date <= version))
     ? base.tables.forecast.filter(r => r.plan_date !== version).concat(C.effectiveForecast(base.tables, version)) : base.tables.forecast;
   if (!Array.isArray(changes) || changes.length > 1000) throw error('每个推演最多1000项修改');
   if ((body.type || 'forecast') === 'forecast') {
@@ -241,7 +241,7 @@ class Service {
     if (!e.orderIndex.has(code)) throw error('编码不存在', 404);
     const row = e.row(code, month, mode, source), targets = e.relations(code, mode, month, true).map(r => { const net = e.net(r.code, month), out = e.edgeDemand(r.code, code, month, mode); return { ...r, forecast: net.raw, remove: net.remove, known: out.known, demand: out.known ? out.value * r.coeff : null, make_dept: e.attributes.get(r.code)?.make_dept || '' }; });
     const paths = e.paths(code, month, mode, source), details = e.months.map(m => { const r = e.row(code, m, mode, source); return { month: m, raw: r.raw, add: r.add, remove: r.remove, ...this.compact(r) }; });
-    return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, forecastTable: r._forecast_table || 'forecast', source: r._source })) };
+    return { trace, ...this.compact(row), attributes: row.attr, raw: row.raw, add: row.add, remove: row.remove, targets: targets.slice(0, 1000), targetCount: targets.length, details, critical: paths.critical, riskNodes: paths.riskNodes.slice(0, 1000), riskNodeCount: paths.riskNodes.length, cumulative: source === 'forecast' ? e.cumulative(code, month, int(q.span, 3, 1, 120), mode) : null, periodSites: row.periodSites, parents: e.graph.parents.get(code).slice(0, 1000), children: e.graph.children.get(code).slice(0, 1000), sources: (e.byCodeMonth.get(JSON.stringify([code, month])) || []).slice(0, 100).map(r => ({ qty: r.qty, site_code: r.site_code, site_name: r.site_name, forecastTable: r._forecast_table || 'forecast', forecastDate: r._forecast_date || r.plan_date, source: r._source })) };
   }
   graph(q, actor) {
     const { engine: e, month, mode, source, trace } = this.context(q, actor), depth = int(q.depth, 3, 1, 10);

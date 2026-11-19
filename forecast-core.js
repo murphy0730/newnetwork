@@ -270,27 +270,45 @@
   function forecastVersions(tables) {
     return [...new Set(['forecast', ...supplementTables].flatMap(k => (tables[k] || []).map(r => r.plan_date)))].sort();
   }
+  function supplementVersions(rows, version) {
+    const byDate = new Map();
+    for (const row of rows || []) {
+      if (!(row.plan_date <= version)) continue;
+      if (!byDate.has(row.plan_date)) byDate.set(row.plan_date, []);
+      byDate.get(row.plan_date).push(row);
+    }
+    return [...byDate.keys()].sort().reverse().map(date => [date, byDate.get(date)]);
+  }
   function effectiveForecast(tables, version) {
     const rows = (tables.forecast || []).filter(r => r.plan_date === version);
+    if (!version) return rows;
     const occupied = new Set(rows.map(r => JSON.stringify([r.code, r.month])));
+    const firstMonth = version.slice(0, 7);
     for (const table of supplementTables) {
-      const added = new Set();
-      for (const r of tables[table] || []) if (r.plan_date === version) {
-        for (let i = 1; i <= 18; i++) {
-          const qty = r['m' + i]; if (qty == null || text(qty) === '') continue;
-          const month = addMonth(r.plan_date.slice(0, 7), i - 1), key = JSON.stringify([r.code, month]);
-          if (!occupied.has(key)) { rows.push({ code: r.code, plan_date: r.plan_date, month, qty, _forecast_table: table, _source: r._source }); added.add(key); }
+      for (const [date, batch] of supplementVersions(tables[table], version)) {
+        const months = Array.from({ length: 18 }, (_, i) => addMonth(date.slice(0, 7), i));
+        const added = new Set();
+        for (const r of batch) for (const [i, month] of months.entries()) {
+          const qty = r['m' + (i + 1)];
+          if (month < firstMonth || qty == null || qty === '') continue;
+          const key = JSON.stringify([r.code, month]);
+          if (occupied.has(key)) continue;
+          rows.push({ code: r.code, plan_date: version, month, qty, _forecast_table: table, _forecast_date: date, _source: r._source });
+          added.add(key);
         }
+        // A single source date may have multiple rows for the same code and month.
+        for (const key of added) occupied.add(key);
       }
-      for (const key of added) occupied.add(key);
     }
     return rows;
   }
   function forecastAttributes(tables, version) {
     const attributes = new Map(tables.attributes.map(r => [r.code, r]));
-    for (const table of supplementTables) for (const r of tables[table] || []) {
-      if (r.plan_date !== version || !text(r.make_dept) || text(attributes.get(r.code)?.make_dept)) continue;
-      attributes.set(r.code, { ...attributes.get(r.code), code: r.code, make_dept: text(r.make_dept) });
+    for (const table of supplementTables) for (const [, batch] of supplementVersions(tables[table], version)) {
+      for (const r of batch) {
+        if (!text(r.make_dept) || text(attributes.get(r.code)?.make_dept)) continue;
+        attributes.set(r.code, { ...attributes.get(r.code), code: r.code, make_dept: text(r.make_dept) });
+      }
     }
     return attributes;
   }
@@ -340,7 +358,7 @@
         if (r.direction === '供应' && this.months.includes(r.month)) this.periodAdds.set(r.code, (this.periodAdds.get(r.code) || 0) + r.qty);
       }
     }
-    // 产业优先表6，缺失时取所选版本补充1/2的非空制造部门。
+    // 产业优先表6，缺失时按补充表优先级和日期查找非空制造部门。
     dept(code) { const a = this.attributes.get(code); return a && a.make_dept ? a.make_dept : '未知部门'; }   // make_dept 为空或无表6维护行，统一按「未知部门」作为一个部门参与计算
     sameIndustry(a, b) { const x = this.dept(a); return x != null && x === this.dept(b); }
     net(code, month) {

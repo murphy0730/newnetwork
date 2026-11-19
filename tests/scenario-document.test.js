@@ -67,7 +67,8 @@ add('S41', '补充1空白时使用补充2', 'A/B属X，C属Y；A=100、C=50，B�
 add('S42', '补充1显式0阻止补充2', 'A/B属X，C属Y；A=100、C=50，B表1无记录；B补充1的m1=0、补充2的m1=70。本月B是已知0。', () => supplement(supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 0 }), 2, 'B', { m1: 70 }), [[0, -50], [0, -50], [100, 50]]);
 add('S43', '补充制造部门改变跨产业边界', 'A属X、C属Y；B无表6、表1无预测，补充1的m1=80且make_dept=Y。B与C同产业，cross继续到A；B及其预测不会因无表6被过滤。', () => { const s = supplement(chain({ b: null, bd: null, cd: 'Y' }), 1, 'B', { m1: 80 }, 'Y'); C.scopeTables(s.tables); return s; }, [[80, 30], [100, 50], [100, 50]]);
 add('S44', '净预测设置下补充原始量仍应用表2', 'A/B属X、C属Y，表1按net：A=100、C=50；B表1无记录、补充1的m1=80，表2对B供应添加10、使用剔除20。B作为需求来源的净需求60，top仍取A=100。', () => { const s = supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }); s.tables.adjust.push({ code: 'B', direction: '供应', purchase_code: 'BUY', month, qty: 10 }, { code: 'B', direction: '使用', purchase_code: '', month, qty: 20 }); return s; }, [[60, 10], [60, 10], [100, 50]]);
-add('S45', '其他版本补充量不回填当前版本', 'A/B属X，C属Y；A=100、C=50，当前版本B表1及两补充表均无记录；补充1仅在2026-09-23版本有B的m1=80。当前版本B仍缺失，cross/top继续到A。', () => supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }, 'X', '2026-09-23'), [[0, -50], [100, 50], [100, 50]]);
+add('S45', '晚于所选版本的补充量不回填', 'A/B属X，C属Y；A=100、C=50，当前版本B表1及两补充表均无记录。补充1仅在2026-09-25有B的m1=80，晚于所选的2026-09-24版，B仍缺失，cross/top继续到A。', () => supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 80 }, 'X', '2026-09-25'), [[0, -50], [100, 50], [100, 50]]);
+add('S46', '较早的补充表按产出月份回填', 'A/B属X，C属Y；A=100、C=50，表1的2026-09-24版缺B。补充1的plantdate=2026-08-26，m1=30、m2=80。9月匹配m2，B按80参与计算。', () => supplement(chain({ b: null, cd: 'Y' }), 1, 'B', { m1: 30, m2: 80 }, 'X', '2026-08-26'), [[80, 30], [80, 30], [100, 50]]);
 
 function status(r) { return r.passThrough ? '透传' : !r.applicable ? '不适用' : !r.complete ? '数据不完整' : r.partial ? '部分来源缺失' : '完整'; }
 function verify(c) {

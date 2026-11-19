@@ -42,13 +42,45 @@ test('fallback is per version/code/month; zero blocks lower sources and same-sou
   supplement(s, 1, 'SUM', { m1: 2 }); supplement(s, 1, 'SUM', { m1: 3 });
   supplement(s, 2, 'SUM', { m1: 100 });
   supplement(s, 2, 'A', { m1: 200, m2: 200, m3: 237 });
-  supplement(s, 1, 'ONLY-OTHER-VERSION', { m1: 1000 }, '', '2026-10-25');
+  supplement(s, 1, 'ONLY-OTHER-VERSION', { m1: 1000 }, '', '2026-10-27');
   const e = new C.Engine(s, version);
   assert.equal(e.net('A', month).raw, 0); assert.equal(e.net('MULTI', month).raw, 5); assert.equal(e.net('SUM', month).raw, 5);
   assert.equal(e.net('A', '2026-11').raw, 0); assert.equal(e.net('A', '2026-11').known, true);
   assert.equal(e.net('A', '2026-12').raw, 237); assert.equal(e.net('A', '2027-01').known, false);
   assert.equal(e.net('A', '2028-03').raw, 18); assert.equal(e.months.length, 18);
   assert.equal(e.net('ONLY-OTHER-VERSION', month).known, false);
+});
+
+test('an earlier supplement fills missing forecasts by production month in a newer table1 version', () => {
+  const s = C.empty(), selected = '2026-11-16', november = '2026-11', code = '000123';
+  s.tables.forecast.push({ code: 'P', plan_date: selected, month: november, qty: 1000 });
+  s.tables.forecast.push({ code, plan_date: selected, month: '2026-12', qty: 0 });
+  s.tables.bom.push({ parent: 'P', child: code, qty: 1, parent_template: 'AI', child_template: 'AI' });
+  const parsed = C.parseMatrix('forecastSupplement1', [
+    ['item_code', 'plantdate', 'm1', 'm2', 'm3', 'm4'],
+    [code, '2026-10-26T00:00', 357, 893.4286, 845.7142857, 50],
+    [code, '2026-10-25', 360, 900, 840, 80],
+    [code, '2026-11-15', '', 500, 0, ''],
+    [code, '2026-11-17', 888, 300, 100, 200]
+  ]);
+  assert.deepEqual(parsed.errors, []);
+  s.tables.forecastSupplement1 = parsed.rows;
+  supplement(s, 2, code, { m1: 999, m3: 999 }, '', selected);
+  const root = directory(), service = new Service(path.join(root, 'test.sqlite'));
+  try {
+    service.publish(s, 0, 'test', 'fixture');
+    const q = { version: selected, month: november, mode: 'direct', code, summary: 1 };
+    const { months, rows: [row] } = service.list(q, 'test');
+    assert.equal(months[0], november, 'an older supplement must not shift the start month back');
+    assert.equal(row.periods[0].raw, 893.4286);
+    assert.equal(row.gap, 1000 - 893.4286);
+    const source = service.detail(q, 'test').sources[0];
+    assert.deepEqual([source.forecastTable, source.forecastDate, source.qty], ['forecastSupplement1', '2026-10-26', 893.4286]);
+    for (const [month, forecastTable] of [['2026-12', 'forecast'], ['2027-01', 'forecastSupplement1']]) {
+      const detail = service.detail({ ...q, month }, 'test');
+      assert.equal(detail.raw, 0); assert.equal(detail.sources[0].forecastTable, forecastTable);
+    }
+  } finally { service.store.close(); }
 });
 
 test('supplement raw forecasts always apply table2, while table1 follows its selected input mode', () => {
@@ -147,6 +179,8 @@ test('build/import/restore and service filters use supplement-only versions and 
 
 test('supplement predictions support independent quantity and quality scenarios without changing baseline or raw input mode', () => {
   const root = directory(), service = new Service(path.join(root, 'scenario.sqlite')), s = fixture();
+  s.tables.forecastSupplement1 = [{ code: 'B', plan_date: '2026-09-26', make_dept: '模组', m2: 30, m3: 40 }];
+  s.tables.forecastSupplement2 = [{ code: 'B', plan_date: '2026-09-26', make_dept: '后备部门', m2: 999, m3: 999 }];
   try {
     service.publish(s, 0, 'test', 'fixture');
     const body = { baseRevision: 1, version, month, code: 'B', mode: 'cross', source: 'forecast' };
@@ -158,7 +192,7 @@ test('supplement predictions support independent quantity and quality scenarios 
     assert.ok(Math.abs(service.engine({ scenario: quality.id }, 'test').net('B', month).raw - 20) < C.EPS);
     service.engines.clear(); assert.equal(service.engine({ scenario: sim.id }, 'test').net('B', month).supply, 65);
     assert.equal(service.engine({ version }).net('B', month).raw, 30); assert.equal(service.store.revision(), 1);
-    assert.equal(service.state().tables.forecastSupplement1[0].m1, 30);
+    assert.equal(service.state().tables.forecastSupplement1[0].m2, 30);
   } finally { service.store.close(); }
 });
 
