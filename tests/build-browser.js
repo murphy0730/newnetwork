@@ -64,6 +64,13 @@ async function meta() { return (await fetch('http://127.0.0.1:' + appPort + '/ap
   await cdp('Page.navigate', { url: base }); await click('#seg-view [data-view=table]');
   await wait(() => js("!!document.querySelector('#tbl-body [data-code=\"SUP-B\"]')"), 'supplement summary');
   assert.ok(await js("document.querySelector('#tbl-body tr[data-supplier=\"SUP-B\"]').textContent.includes('模组')"));
+  const prediction = await js(`(() => {
+    const head = document.querySelector('#tbl-body thead');
+    const firstValue = head.rows[0].querySelectorAll('[rowspan="2"]').length;
+    const row = document.querySelector('#tbl-body tr[data-supplier="SUP-B"]');
+    return [head.rows[1].cells[0].textContent, row.cells[firstValue].textContent];
+  })()`);
+  assert.deepEqual(prediction, ['预测值', '30']);
   await click('#tbl-body [data-code="SUP-B"]');
   await wait(() => js("document.querySelector('#detail-body .code')?.textContent==='SUP-B' && document.querySelector('.fc-source-list')?.textContent.includes('预测表-补充1')"), 'supplement detail source');
   await js("document.querySelector('.fc-source-list').open=true"); checks.push('summary and graph detail show the effective supplement source');

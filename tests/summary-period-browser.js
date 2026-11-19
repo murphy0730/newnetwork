@@ -22,9 +22,13 @@ function seedFixture(db) {
   data.kind = 'imported'; data.config.input_mode = 'raw';
   data.tables.attributes = [{ code: 'P', make_dept: 'a', lead_mean: 1 }, { code: 'C', make_dept: 'b', lead_mean: 1 }];
   data.tables.bom = [{ id: 'B1', parent: 'P', child: 'C', qty: 2 }];
+  const plan_date = '2026-09-01';
+  data.tables.forecast.push({ code: 'C', month: '2026-09', plan_date, qty: 100, site_code: 'S' });
+  data.tables.forecastSupplement1.push({ code: 'C', plan_date, m1: 999, m2: 200 });
+  data.tables.forecastSupplement2.push({ code: 'C', plan_date, m2: 999, m3: 300 });
   for (let i = 0; i < 3; i++) {
     const month = C.addMonth('2026-09', i);
-    for (const [code, qty] of [['P', 200 + i * 100], ['C', 100 + i * 100]]) data.tables.forecast.push({ code, month, plan_date: '2026-09-01', qty, site_code: 'S' });
+    data.tables.forecast.push({ code: 'P', month, plan_date, qty: 200 + i * 100, site_code: 'S' });
     data.tables.adjust.push({ code: 'C', purchase_code: 'BUY-C', direction: '供应', month, qty: 10 * (i + 1) }, { code: 'C', purchase_code: '', direction: '使用', month, qty: 5 * (i + 1) });
     if (i === 0) data.tables.inventory.push({ code: 'C', date: month + '-01', qty: 50 });   // 表4新规则：取不晚于今天的最新快照（与分析月无关），单条固定历史日期即可
   }
@@ -63,16 +67,18 @@ async function exported() {
     const individual = await choose('单独月份');
     assert.ok(await js("document.querySelector('#tbl-count').textContent.includes('3个月分别展示3组结果，不跨月累加')"));
     assert.equal(individual.value, 'individual'); assert.deepEqual(individual.headings, ['2026年9月', '2026年10月', '2026年11月']);
-    for (const [field, expected] of [['表1预测', ['100', '200', '300']], ['供应添加', ['10', '20', '30']], ['使用剔除', ['5', '10', '15']], ['净供应', ['110', '220', '330']], ['来源折算需求', ['400', '600', '800']], ['供需结余', ['-295', '-390', '-485']]]) assert.deepEqual(individual.groups.map(g => g[field]), expected, mode + '/' + field);
+    for (const [field, expected] of [['预测值', ['100', '200', '300']], ['供应添加', ['10', '20', '30']], ['使用剔除', ['5', '10', '15']], ['净供应', ['110', '220', '330']], ['来源折算需求', ['400', '600', '800']], ['供需结余', ['-295', '-390', '-485']]]) assert.deepEqual(individual.groups.map(g => g[field]), expected, mode + '/' + field);
     assert.deepEqual(individual.groups.map(g => g['库存后结余']), ['-245', undefined, undefined]);
     const separateExport = await exported();
     assert.equal(separateExport[0]['计算方式'], '单独月份'); assert.equal(separateExport[0]['净供应 2026年10月'], 220);
+    assert.deepEqual(individual.headings.map(label => separateExport[0]['预测值 ' + label]), [100, 200, 300]);
     const cumulative = await choose('累计月份'); assert.equal(cumulative.value, 'cumulative'); assert.deepEqual(cumulative.headings, ['2026年9-11月']);
     assert.ok(await js("document.querySelector('#tbl-count').textContent.includes('3个月合并为1组供需合计')"));
     const total = cumulative.groups[0];
-    for (const [field, expected] of Object.entries({ '表1预测': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '供需结余': '-1,170', '最新库存': '50', '库存后结余': '-1,120' })) assert.equal(total[field], expected, mode + '/' + field);
+    for (const [field, expected] of Object.entries({ '预测值': '600', '供应添加': '60', '使用剔除': '30', '净供应': '660', '来源折算需求': '1,800', '供需结余': '-1,170', '最新库存': '50', '库存后结余': '-1,120' })) assert.equal(total[field], expected, mode + '/' + field);
     const cumulativeExport = await exported(); assert.equal(cumulativeExport[0]['计算方式'], '累计月份'); assert.equal(cumulativeExport[0]['净供应 2026年9-11月'], 660);
     assert.equal(cumulativeExport[0]['库存后结余 2026年9-11月'], -1120);
+    assert.equal(cumulativeExport[0]['预测值 2026年9-11月'], 600);
     evidence.push({ mode, individual, cumulative }); checks.push(mode + ': label selection, per-month values, cumulative sums and Excel agree');
     assert.deepEqual(await choose('单独月份'), individual); checks.push(mode + ': switching back restores individual values');
   }

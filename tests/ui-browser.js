@@ -16,7 +16,7 @@ for (const code of ['ISOLATED-TEST-1', 'ISOLATED-TEST-2']) {
   fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code });
   fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code });
 }
-// 零预测编码：表1预测为 0 且带 BOM 连接（验证「显示预测值为 0 的编码」开关）
+// 零预测编码：有效预测为 0（表1显式0，会阻止补充1/2回退）且带 BOM 连接（验证「显示预测值为 0 的编码」开关）
 fixtureData.tables.forecast.push({ ...fixtureData.tables.forecast[0], code: 'ZERO-TEST-1', qty: 0 });
 fixtureData.tables.attributes.push({ ...fixtureData.tables.attributes[0], code: 'ZERO-TEST-1' });
 fixtureData.tables.bom.push({ id: 'Z-1', parent: 'FG-01', child: 'ZERO-TEST-1', qty: 1 });
