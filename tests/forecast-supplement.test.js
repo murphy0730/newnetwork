@@ -35,20 +35,53 @@ test('supplement schemas preserve text codes, explicit zero and blanks; malforme
   assert.match(C.parseMatrix('forecastSupplement1', [['item_code', 'plantdate'], ['A', version]]).errors[0].message, /m1～m18/);
 });
 
-test('fallback is per version/code/month; zero blocks lower sources and same-source rows aggregate', () => {
+test('fallback is per version/code/month; zero blocks lower sources and table1 rows aggregate', () => {
   const s = C.empty(); forecast(s, 'A', 0); forecast(s, 'MULTI', 2); forecast(s, 'MULTI', 3);
   supplement(s, 1, 'A', { m1: 100, m2: 0, m3: null, m18: 18 });
   supplement(s, 1, 'MULTI', { m1: 999 });
-  supplement(s, 1, 'SUM', { m1: 2 }); supplement(s, 1, 'SUM', { m1: 3 });
-  supplement(s, 2, 'SUM', { m1: 100 });
   supplement(s, 2, 'A', { m1: 200, m2: 200, m3: 237 });
   supplement(s, 1, 'ONLY-OTHER-VERSION', { m1: 1000 }, '', '2026-10-27');
   const e = new C.Engine(s, version);
-  assert.equal(e.net('A', month).raw, 0); assert.equal(e.net('MULTI', month).raw, 5); assert.equal(e.net('SUM', month).raw, 5);
+  assert.equal(e.net('A', month).raw, 0); assert.equal(e.net('MULTI', month).raw, 5);
   assert.equal(e.net('A', '2026-11').raw, 0); assert.equal(e.net('A', '2026-11').known, true);
   assert.equal(e.net('A', '2026-12').raw, 237); assert.equal(e.net('A', '2027-01').known, false);
   assert.equal(e.net('A', '2028-03').raw, 18); assert.equal(e.months.length, 18);
   assert.equal(e.net('ONLY-OTHER-VERSION', month).known, false);
+});
+
+test('both supplement tables use the latest update for duplicate code and plantdate rows', () => {
+  const s = C.empty();
+  const header = ['item_code', 'plantdate', 'm1', 'm2', 'make_dept', 'last_update_date'];
+  const serial = (Date.UTC(2026, 9, 26) - Date.UTC(1899, 11, 30)) / 86400000;
+  const first = C.parseMatrix('forecastSupplement1', [header,
+    ['A', version, 17, 12, '较早部门', '2026-10-26T10:30:00.125001'],
+    ['A', version, 25, '', '最新部门', '2026-10-26 10:30:00.125002'],
+    ['A', version, 500, 500, '空日期', ''],
+    ['TIE', version, 3, '', '', '2026-10-26T10:30:00+08:00'],
+    ['TIE', version, 4, '', '', '2026-10-26T02:30:00Z']
+  ]);
+  const second = C.parseMatrix('forecastSupplement2', [header,
+    ['A', version, 999, 40, '', serial + 12 / 24],
+    ['A', version, 200, 80, '', serial + 10 / 24]
+  ]);
+  assert.deepEqual([...first.errors, ...second.errors], []);
+  assert.equal(first.rows[1].last_update_date, '2026-10-26T02:30:00.125002000Z');
+  assert.equal(second.rows[0].last_update_date, '2026-10-26T04:00:00.000000000Z');
+  assert.equal(C.parseMatrix('forecastSupplement1', [header, ['A', version, 1, '', '', '2026-02-30 12:00:00']]).errors[0].field, 'last_update_date');
+  s.tables.forecastSupplement1 = first.rows;
+  s.tables.forecastSupplement2 = second.rows;
+  supplement(s, 1, 'LEGACY', { m1: 55, _extra: { last_update_date: '2026-10-26 16:00:00' } });
+  supplement(s, 1, 'LEGACY', { m1: 99, _extra: { LAST_UPDATE_DATE: '2026-10-26 15:30:00' } });
+  supplement(s, 2, 'NO-UPDATE', { m1: 5 });
+  supplement(s, 2, 'NO-UPDATE', { m1: 8 });
+  const e = new Engine(s, version);
+  assert.equal(e.net('A', month).raw, 25);
+  assert.equal(e.net('A', '2026-11').raw, 40, 'an empty cell in the selected row may use supplement2');
+  assert.equal(e.dept('A'), '最新部门');
+  assert.equal(e.net('TIE', month).raw, 3);
+  assert.equal(e.net('LEGACY', month).raw, 55);
+  assert.equal(e.net('NO-UPDATE', month).raw, 5);
+  assert.equal(s.tables.forecastSupplement1.length, 7, 'all input rows remain available for inspection');
 });
 
 test('an earlier supplement fills missing forecasts by production month in a newer table1 version', () => {
@@ -57,9 +90,9 @@ test('an earlier supplement fills missing forecasts by production month in a new
   s.tables.forecast.push({ code, plan_date: selected, month: '2026-12', qty: 0 });
   s.tables.bom.push({ parent: 'P', child: code, qty: 1, parent_template: 'AI', child_template: 'AI' });
   const parsed = C.parseMatrix('forecastSupplement1', [
-    ['item_code', 'plantdate', 'm1', 'm2', 'm3', 'm4'],
-    [code, '2026-10-26T00:00', 357, 893.4286, 845.7142857, 50],
-    [code, '2026-10-25', 360, 900, 840, 80],
+    ['item_code', 'plantdate', 'm1', 'm2', 'm3', 'm4', 'last_update_date'],
+    [code, '2026-10-26T00:00', 357, 893.4286, 845.7142857, 50, '2026-10-26 10:30:00'],
+    [code, '2026-10-25', 360, 900, 840, 80, '2026-10-27 15:00:00'],
     [code, '2026-11-15', '', 500, 0, ''],
     [code, '2026-11-17', 888, 300, 100, 200]
   ]);

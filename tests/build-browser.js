@@ -43,8 +43,12 @@ async function meta() { return (await fetch('http://127.0.0.1:' + appPort + '/ap
   const C = require('../forecast-core'), data = C.empty(), version = '2027-01-19', month = '2027-01';
   data.tables.attributes.push({ code: 'SUP-A', make_dept: '整机' }, { code: 'SUP-C', make_dept: '材料' });
   for (const [code, qty] of [['SUP-A', 100], ['SUP-C', 50]]) data.tables.forecast.push({ code, qty, plan_date: version, month, site_code: 'SUP-SITE' });
-  data.tables.forecastSupplement1.push({ code: 'SUP-B', plan_date: '2026-12-26', make_dept: '模组', m2: 30, m3: null });
-  data.tables.forecastSupplement2.push({ code: 'SUP-B', plan_date: version, make_dept: '备选部门', m1: 999, m2: 44 });
+  data.tables.forecastSupplement1.push(
+    { code: 'SUP-B', plan_date: '2026-12-26', last_update_date: '2026-12-26 11:00:00', make_dept: '模组', m2: 30, m3: null },
+    { code: 'SUP-B', plan_date: '2026-12-26', last_update_date: '2026-12-26 10:00:00', make_dept: '旧部门', m2: 900, m3: 999 });
+  data.tables.forecastSupplement2.push(
+    { code: 'SUP-B', plan_date: version, last_update_date: version + ' 10:00:00', make_dept: '备选部门', m1: 999, m2: 700 },
+    { code: 'SUP-B', plan_date: version, last_update_date: version + ' 11:00:00', make_dept: '备选部门', m1: 999, m2: 44 });
   for (const [parent, child, qty] of [['SUP-A', 'SUP-B', 2], ['SUP-B', 'SUP-C', 3]]) data.tables.bom.push({ parent, child, qty, parent_template: 'AI', child_template: 'AI' });
   data.tables.adjust.push({ code: 'SUP-B', month, direction: '供应', purchase_code: 'BUY', qty: 5 }, { code: 'SUP-B', month, direction: '使用', purchase_code: '', qty: 4 });
   data.tables.inventory.push({ code: 'SUP-B', date: C.today(), qty: 7 });

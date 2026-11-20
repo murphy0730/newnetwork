@@ -9,7 +9,7 @@
   const supplementTables = ['forecastSupplement1', 'forecastSupplement2'];
   const supplementFields = () => ({
     plan_date: field('plantdate', ['plan_date', '计划日期', '预测版本'], 'date'), code: field('item_code', ['编码']),
-    make_dept: field('make_dept', ['制造部门']),
+    make_dept: field('make_dept', ['制造部门']), last_update_date: field('last_update_date', [], 'optionalDateTime'),
     ...Object.fromEntries(Array.from({ length: 18 }, (_, i) => ['m' + (i + 1), field('m' + (i + 1), [], 'optionalNumber')]))
   });
   const schemas = {
@@ -68,6 +68,22 @@
     const y = +m[1], mo = +m[2], d = +(m[3] || 1);
     if (y < 1900 || mo < 1 || mo > 12 || d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate() || (!monthOnly && !m[3] && typeof value !== 'number')) throw Error('日期或月份无效');
     return `${y}-${String(mo).padStart(2, '0')}` + (monthOnly ? '' : `-${String(d).padStart(2, '0')}`);
+  }
+  function updateDate(value, date1904) {
+    if (text(value) === '') return null;
+    if (typeof value === 'number') {
+      const day = Math.floor(value);
+      const start = Date.parse(date(day, false, date1904) + 'T00:00:00+08:00');
+      return new Date(start + Math.round((value - day) * 86400000)).toISOString().replace(/Z$/, '000000Z');
+    }
+    const parts = text(value).match(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2})(?:[ T](\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?)\s*(Z|[+-]\d{2}:?\d{2})?)?$/i);
+    if (!parts) throw Error('日期时间应为YYYY-MM-DD或YYYY-MM-DD HH:mm:ss');
+    let time = parts[2] || '00:00:00';
+    if (time.indexOf(':') === 1) time = '0' + time;
+    const timestamp = Date.parse(date(parts[1]) + 'T' + time + (parts[3] || '+08:00'));
+    if (!Number.isFinite(timestamp)) throw Error('日期时间无效');
+    const fraction = (time.split('.')[1] || '').padEnd(9, '0');
+    return new Date(timestamp).toISOString().replace(/\.\d{3}Z$/, `.${fraction}Z`);
   }
   function num(v, optional = false) {
     if (text(v) === '') { if (optional) return null; throw Error('数量不能为空'); }
@@ -137,6 +153,7 @@
           if (table === 'inventory' && key === 'qty') out[key] = numSigned(v, false);
           else if (f.type === 'number' || f.type === 'optionalNumber') out[key] = num(v, f.type === 'optionalNumber');
           else if (f.type === 'date' || f.type === 'month' || f.type === 'optionalDate') out[key] = text(v) === '' && !schema.required.includes(key) ? null : date(v, f.type === 'month', meta.date1904);
+          else if (f.type === 'optionalDateTime') out[key] = updateDate(v, meta.date1904);
           else if (f.type === 'bool') out[key] = bool(v);
           else { if (typeof v === 'number' && (!Number.isSafeInteger(v) || Math.abs(v) >= 1e15)) throw Error('编码/ID精度不可靠，请在Excel中改为文本后重新导出'); out[key] = text(v); }
           if (schema.required.includes(key) && key !== 'purchase_code' && text(out[key]) === '') throw Error('必填字段为空');
@@ -270,14 +287,21 @@
   function forecastVersions(tables) {
     return [...new Set(['forecast', ...supplementTables].flatMap(k => (tables[k] || []).map(r => r.plan_date)))].sort();
   }
+  function supplementUpdate(row) {
+    // Older imports retained this column among the unrecognized fields.
+    const value = row.last_update_date ?? Object.entries(row._extra || {}).find(([name]) => header(name) === 'last_update_date')?.[1];
+    try { return updateDate(value) || ''; } catch (_) { return ''; }
+  }
   function supplementVersions(rows, version) {
     const byDate = new Map();
     for (const row of rows || []) {
       if (!(row.plan_date <= version)) continue;
-      if (!byDate.has(row.plan_date)) byDate.set(row.plan_date, []);
-      byDate.get(row.plan_date).push(row);
+      if (!byDate.has(row.plan_date)) byDate.set(row.plan_date, new Map());
+      const byCode = byDate.get(row.plan_date);
+      const previous = byCode.get(row.code);
+      if (!previous || supplementUpdate(row) > supplementUpdate(previous)) byCode.set(row.code, row);
     }
-    return [...byDate.keys()].sort().reverse().map(date => [date, byDate.get(date)]);
+    return [...byDate.keys()].sort().reverse().map(date => [date, byDate.get(date).values()]);
   }
   function effectiveForecast(tables, version) {
     const rows = (tables.forecast || []).filter(r => r.plan_date === version);
@@ -287,17 +311,14 @@
     for (const table of supplementTables) {
       for (const [date, batch] of supplementVersions(tables[table], version)) {
         const months = Array.from({ length: 18 }, (_, i) => addMonth(date.slice(0, 7), i));
-        const added = new Set();
         for (const r of batch) for (const [i, month] of months.entries()) {
           const qty = r['m' + (i + 1)];
           if (month < firstMonth || qty == null || qty === '') continue;
           const key = JSON.stringify([r.code, month]);
           if (occupied.has(key)) continue;
           rows.push({ code: r.code, plan_date: version, month, qty, _forecast_table: table, _forecast_date: date, _source: r._source });
-          added.add(key);
+          occupied.add(key);
         }
-        // A single source date may have multiple rows for the same code and month.
-        for (const key of added) occupied.add(key);
       }
     }
     return rows;
